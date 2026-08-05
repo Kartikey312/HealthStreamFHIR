@@ -40,3 +40,6 @@ const startService = async () => {
 };
 
 startService();
+
+
+// curl -X POST http://localhost:3000/patient -H "Content-Type: application/json" -d '{"patientId":"p3","name":"Kartikey2","status":"new_admission"}'
