@@ -10,7 +10,7 @@ import asyncio
 
 logger = logging.getLogger(__name__)
 
-KAFKA_BROKER = "kafka:29092"  # Use internal Docker network address
+KAFKA_BROKER = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 
 
 async def create_kafka_producer():
