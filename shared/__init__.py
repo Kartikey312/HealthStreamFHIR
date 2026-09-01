@@ -1,6 +1,11 @@
 """
 Shared utilities for JSON2FHIR services
 """
+import os
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 from .database import engine, SessionLocal, get_db
 from .models import Base, Transaction, FHIRRequest, FHIRResponse, ResponseMapping
 from .schemas import (
