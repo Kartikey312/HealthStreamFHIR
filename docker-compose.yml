@@ -1,37 +1,174 @@
+version: '3.8'
+
 services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: mysql-fhir
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: fhir_db
+      MYSQL_USER: fhir_user
+      MYSQL_PASSWORD: fhir_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 5s
+      retries: 10
+
+  # Zookeeper (required for Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: echo stat | nc localhost 2181
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Kafka Broker
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: kafka
-
+    depends_on:
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
-
+      - "29092:29092"
     environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
-      KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_PROCESS_ROLES: 'broker,controller'
-      KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
-      KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
-      KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
-      KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
-      KAFKA_LOG_DIRS: '/tmp/kraft-combined-logs'
-      CLUSTER_ID: 'MkU3OEVBNTcwNTJENDM2Qk'
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server localhost:9092
+      interval: 5s
+      timeout: 10s
+      retries: 5
 
+  # Kafka UI
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
-
     depends_on:
       - kafka
-
     ports:
       - "8080:8080"
-
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # Integration API - FastAPI
+  integration-api:
+    build:
+      context: .
+      dockerfile: ./integration-api/Dockerfile
+    container_name: integration-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./integration-api:/app
+      - ./shared:/shared
+    command: python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # JSON-FHIR Service
+  json-fhir-service:
+    build:
+      context: .
+      dockerfile: ./json-fhir-service/Dockerfile
+    container_name: json-fhir-service
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./json-fhir-service:/app
+      - ./shared:/shared
+    command: python src/main.py
+
+  # FHIR-JSON Service
+  fhir-json-service:
+    build:
+      context: .
+      dockerfile: ./fhir-json-service/Dockerfile
+    container_name: fhir-json-service
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./fhir-json-service:/app
+      - ./shared:/shared
+    command: python src/main.py
+
+  # Processing Service
+  processing-service:
+    build:
+      context: .
+      dockerfile: ./processing-service/Dockerfile
+    container_name: processing-service
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./processing-service:/app
+      - ./shared:/shared
+    command: python src/main.py
+
+  # Communication Service - FastAPI
+  communication-service:
+    build:
+      context: .
+      dockerfile: ./communication-service/Dockerfile
+    container_name: communication-service
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./communication-service:/app
+      - ./shared:/shared
+    command: python -m uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
+
+volumes:
+  mysql_data:
