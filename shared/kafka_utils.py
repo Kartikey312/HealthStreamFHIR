@@ -3,6 +3,7 @@ Kafka utilities for message handling
 """
 import json
 import logging
+import os
 from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from typing import Callable, Optional
 import asyncio
