@@ -39,7 +39,9 @@ async def process_fhir_response(message):
         transaction_id = value.get("transaction_id")
         patient_id = value.get("patient_id")
         fhir_response = value.get("fhir_response", {})
-        
+
+        logger.info(f"📦 Incoming FHIR response:\n{json.dumps(value, indent=2, default=str)}")
+
         # Get database session
         db = SessionLocal()
         
@@ -68,7 +70,8 @@ async def process_fhir_response(message):
             # Transform FHIR back to JSON
             logger.info(f"🔄 Transforming FHIR response to JSON for patient {patient_id}...")
             json_response = fhir_to_json_response(fhir_response, patient_id)
-            
+            logger.info(f"📦 Transformed JSON response:\n{json.dumps(json_response, indent=2, default=str)}")
+
             # Publish to next topic
             kafka_message = {
                 "transaction_id": transaction_id,
@@ -78,13 +81,15 @@ async def process_fhir_response(message):
                 "completed_at": json_response["completed_at"]
             }
             
+            logger.info(f"📤 Publishing to json.response:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
             await send_kafka_message(
                 producer,
                 TOPICS["json_response"],
                 transaction_id,
                 kafka_message
             )
-            
+
             logger.info(f"📤 Published JSON to json.response: {transaction_id}")
             logger.info(f"✅ Transformation complete for patient {patient_id}")
             

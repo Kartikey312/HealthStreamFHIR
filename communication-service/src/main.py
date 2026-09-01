@@ -3,6 +3,7 @@ Communication Service - FastAPI
 Receives FHIR responses from Dhamani/Hospital system and publishes to Kafka
 """
 import logging
+import json
 import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,7 +100,8 @@ async def receive_fhir_response(response: HospitalResponse):
         response_id = f"RESP-{uuid.uuid4().hex[:12].upper()}"
         
         logger.info(f"📨 Received FHIR response from hospital: {response_id}")
-        
+        logger.info(f"📦 Incoming hospital response:\n{json.dumps(response.dict(), indent=2, default=str)}")
+
         # Create Kafka message
         kafka_message = {
             "transaction_id": response.original_id,
@@ -116,6 +118,8 @@ async def receive_fhir_response(response: HospitalResponse):
             }
         }
         
+        logger.info(f"📤 Publishing to fhir.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
         # Publish to Kafka
         await send_kafka_message(
             producer,
@@ -123,7 +127,7 @@ async def receive_fhir_response(response: HospitalResponse):
             response.original_id,
             kafka_message
         )
-        
+
         logger.info(f"✅ FHIR response published to fhir.incoming: {response_id}")
         
         return {

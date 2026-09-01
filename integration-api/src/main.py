@@ -116,7 +116,8 @@ async def create_patient(
         db.refresh(transaction)
         
         logger.info(f"📝 Created transaction: {transaction_id}")
-        
+        logger.info(f"📦 Incoming JSON payload:\n{json.dumps(patient_data.dict(), indent=2, default=str)}")
+
         # Publish to Kafka
         kafka_message = {
             "transaction_id": transaction_id,
@@ -125,7 +126,9 @@ async def create_patient(
             "status": patient_data.status,
             "payload": patient_data.dict()
         }
-        
+
+        logger.info(f"📤 Publishing to json.request:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
         await send_kafka_message(
             producer,
             TOPICS["json_request"],

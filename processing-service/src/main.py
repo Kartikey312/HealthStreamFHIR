@@ -38,7 +38,9 @@ async def process_final_response(message):
         external_reference_id = value.get("external_reference_id")
         sync_status = value.get("sync_status")
         completed_at = value.get("completed_at")
-        
+
+        logger.info(f"📦 Final JSON response:\n{json.dumps(value, indent=2, default=str)}")
+
         # Get database session
         db = SessionLocal()
         

@@ -40,7 +40,9 @@ async def process_json_message(message):
         patient_id = value.get("patient_id")
         patient_name = value.get("patient_name")
         patient_data = value.get("payload", {})
-        
+
+        logger.info(f"📦 Incoming JSON payload:\n{json.dumps(value, indent=2, default=str)}")
+
         # Get database session
         db = SessionLocal()
         
@@ -69,6 +71,7 @@ async def process_json_message(message):
                 return
             
             logger.info(f"✅ FHIR Patient validated: {fhir_patient['id']}")
+            logger.info(f"📦 Transformed FHIR resource:\n{json.dumps(fhir_patient, indent=2, default=str)}")
             
             # Store in database
             fhir_request = FHIRRequest(
@@ -93,13 +96,15 @@ async def process_json_message(message):
                 "fhir_resource": fhir_patient
             }
             
+            logger.info(f"📤 Publishing to fhir.outgoing:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
             await send_kafka_message(
                 producer,
                 TOPICS["fhir_outgoing"],
                 transaction_id,
                 kafka_message
             )
-            
+
             logger.info(f"📤 Published FHIR to fhir.outgoing: {transaction_id}")
             
         finally:
