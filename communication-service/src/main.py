@@ -5,6 +5,7 @@ Receives FHIR responses from Dhamani/Hospital system and publishes to Kafka
 import logging
 import json
 import uuid
+from typing import Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import sys
@@ -16,7 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 from shared import (
     HospitalResponse,
     create_kafka_producer, send_kafka_message, TOPICS,
-    Base, engine
+    Base, engine,
+    fhir_to_json_request
 )
 
 # Configure logging
@@ -135,6 +137,69 @@ async def receive_fhir_response(response: HospitalResponse):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process FHIR response: {str(e)}"
+        )
+
+
+@app.post("/fhir/request", tags=["FHIR"])
+async def receive_fhir_request(fhir_bundle: Dict[str, Any]):
+    """
+    Dummy Dhamani-facing endpoint: receives a CoverageEligibilityRequest FHIR
+    Bundle (as Dhamani would send it, on behalf of a provider), converts it to
+    flattened JSON, and publishes it for internal processing.
+
+    Flow: Dhamani → Communication Service → Kafka (json.request.incoming)
+    """
+    try:
+        if fhir_bundle.get("resourceType") != "Bundle":
+            raise HTTPException(
+                status_code=400,
+                detail="resourceType must be 'Bundle'"
+            )
+
+        logger.info(f"📨 Received FHIR request Bundle from Dhamani: {fhir_bundle.get('id')}")
+        logger.info(f"📦 Incoming FHIR Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
+
+        json_request = fhir_to_json_request(fhir_bundle)
+
+        transaction_id = (
+            json_request.get("identifier")
+            or json_request.get("id")
+            or f"REQ-{uuid.uuid4().hex[:12].upper()}"
+        )
+
+        logger.info(f"📦 Transformed FHIR request to JSON:\n{json.dumps(json_request, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": transaction_id,
+            "patient_id": json_request.get("patientIdentifier"),
+            "payload": json_request
+        }
+
+        logger.info(f"📤 Publishing to json.request.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["json_request_incoming"],
+            transaction_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ JSON request published to json.request.incoming: {transaction_id}")
+
+        return {
+            "status": "received",
+            "message": "FHIR request received, converted to JSON, and published",
+            "transaction_id": transaction_id,
+            "json_request": json_request
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing FHIR request: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process FHIR request: {str(e)}"
         )
 
 

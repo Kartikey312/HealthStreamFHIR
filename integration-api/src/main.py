@@ -15,9 +15,10 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
-    PatientRequest, TransactionResponse, get_db,
+    PatientRequest, EligibilityResponseIn, TransactionResponse, get_db,
     create_kafka_producer, send_kafka_message, TOPICS,
-    Transaction, Base, engine
+    Transaction, Base, engine,
+    json_to_fhir_response
 )
 
 # Configure logging
@@ -155,6 +156,69 @@ async def create_patient(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process eligibility request: {str(e)}"
+        )
+
+
+@app.post("/response", tags=["Eligibility"])
+async def create_response(
+    response_data: EligibilityResponseIn,
+    db: Session = Depends(get_db)
+):
+    """
+    Accept our flattened CoverageEligibilityResponse decision JSON, convert it
+    to a FHIR Bundle, and publish it for delivery to Dhamani.
+
+    Flow: JSON Input → FHIR Bundle → Kafka (fhir.response.outgoing)
+    """
+    try:
+        if not response_data.patientIdentifier or not response_data.insurerIdentifier:
+            raise HTTPException(
+                status_code=400,
+                detail="patientIdentifier and insurerIdentifier are required"
+            )
+
+        fhir_bundle = json_to_fhir_response(response_data.dict())
+
+        transaction_id = (
+            response_data.requestIdentifier
+            or response_data.id
+            or f"TXN-{uuid.uuid4().hex[:12].upper()}"
+        )
+
+        logger.info(f"📝 Built FHIR response for transaction: {transaction_id}")
+        logger.info(f"📦 Transformed FHIR Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": transaction_id,
+            "patient_id": response_data.patientIdentifier,
+            "fhir_resource": fhir_bundle
+        }
+
+        logger.info(f"📤 Publishing to fhir.response.outgoing:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["fhir_response_outgoing"],
+            transaction_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ Eligibility response for patient {response_data.patientIdentifier} published to Kafka")
+
+        return {
+            "status": "ACCEPTED",
+            "message": "Eligibility response converted to FHIR and published to Kafka",
+            "transaction_id": transaction_id,
+            "fhir_bundle": fhir_bundle
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing eligibility response: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process eligibility response: {str(e)}"
         )
 
 

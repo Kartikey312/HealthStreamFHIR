@@ -83,4 +83,6 @@ TOPICS = {
     "fhir_outgoing": "fhir.outgoing",         # JSON transformed to FHIR
     "fhir_incoming": "fhir.incoming",         # Response from hospital
     "json_response": "json.response",         # FHIR transformed back to JSON
+    "fhir_response_outgoing": "fhir.response.outgoing",  # Our JSON decision transformed to FHIR, for delivery to Dhamani
+    "json_request_incoming": "json.request.incoming",    # Dhamani's FHIR request transformed to JSON
 }
