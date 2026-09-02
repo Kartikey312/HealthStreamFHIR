@@ -735,6 +735,355 @@ def fhir_to_json_response(fhir_bundle: Dict[str, Any], original_patient_id: str)
         raise
 
 
+def json_to_fhir_claim(preauth_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform a PreAuth claim JSON payload (as returned by
+    usp_get_preauth_claims_details_by_claim_id) into a Dhamani-format FHIR
+    message Bundle carrying a Claim resource.
+
+    BEST-EFFORT MAPPING - not verified against a real Dhamani Claim profile
+    or example (unlike json_to_fhir_patient/json_to_fhir_response, which were
+    checked against real bundles). Standard FHIR R4 Claim fields map
+    directly; columns with no FHIR Claim equivalent (batch_number,
+    payer_share, patient_share, teleconsultation, package_extenstion, tax,
+    payer_code*) are carried as placeholder custom extensions under
+    http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/extension-claim-<field>,
+    following the extension convention already used for CoverageEligibility.
+    Replace these extension URLs with the real Dhamani Claim profile's once
+    available.
+
+    diagnosis[] and careTeam[] are left empty: FHIR requires
+    diagnosis[x]/provider respectively on each entry, and the source tables
+    (diagnosis, care_team) are still schema stubs (id + claim_id only, see
+    preauth_tables_mysql.sql) with no real columns to populate them from.
+
+    Args:
+        preauth_json: Combined JSON payload from the PreAuth SP
+            (usp_get_preauth_claims_details_by_claim_id, @AsJson-style output)
+
+    Returns:
+        FHIR message Bundle
+    """
+    try:
+        claim = _first(preauth_json.get("Claims"))
+        message_header_in = _first(preauth_json.get("MessageHeaders"))
+        related_list = preauth_json.get("ClaimRelateds") or []
+        insurance_list = preauth_json.get("ClaimRequestInsurances") or []
+        supporting_info_list = preauth_json.get("Supportinginfo") or []
+        item_list = preauth_json.get("ClaimRequestItems") or []
+        detail_list = preauth_json.get("ClaimRequestDetail") or []
+
+        claim_id = claim.get("id") or str(uuid.uuid4())
+        patient_identifier = claim.get("patient_identifier")
+        provider_identifier = claim.get("provider_identifier")
+        insurer_identifier = claim.get("insurer_identifier")
+
+        bundle_id = str(uuid.uuid4())
+        message_header_id = message_header_in.get("id") or str(uuid.uuid4())
+
+        ext_base = "http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/extension-claim-"
+
+        def _value_x(entry: Dict[str, Any]) -> Dict[str, Any]:
+            if entry.get("value_boolean") is not None:
+                return {"valueBoolean": bool(entry.get("value_boolean"))}
+            if entry.get("value_quantity") is not None:
+                return {"valueQuantity": {"value": entry.get("value_quantity")}}
+            if entry.get("value_attachment_url") or entry.get("value_attachment_data"):
+                return {"valueAttachment": {
+                    "contentType": entry.get("value_attachment_content_type"),
+                    "data": entry.get("value_attachment_data"),
+                    "title": entry.get("value_attachment_title"),
+                    "url": entry.get("value_attachment_url")
+                }}
+            if entry.get("value_string") is not None:
+                return {"valueString": entry.get("value_string")}
+            return {}
+
+        supporting_info = []
+        for si in supporting_info_list:
+            entry = {
+                "sequence": si.get("sequence"),
+                "category": {"coding": [{"code": si.get("category")}]} if si.get("category") else None,
+                "code": {"coding": [{
+                    "code": si.get("supporting_info_code"),
+                    "display": si.get("supporting_info_display")
+                }]} if si.get("supporting_info_code") else None,
+                "reason": {"coding": [{"code": si.get("reason")}]} if si.get("reason") else None
+            }
+            if si.get("timing_start") or si.get("timing_end"):
+                entry["timingPeriod"] = {"start": si.get("timing_start"), "end": si.get("timing_end")}
+            elif si.get("timing_date"):
+                entry["timingDate"] = si.get("timing_date")
+            entry.update(_value_x(si))
+            supporting_info.append({k: v for k, v in entry.items() if v is not None})
+
+        def _build_detail(item_id: str) -> List[Dict[str, Any]]:
+            details = []
+            for d in detail_list:
+                if d.get("item_id") != item_id:
+                    continue
+                detail = {
+                    "sequence": d.get("sequence"),
+                    "productOrService": {"coding": [{
+                        "system": d.get("product_or_service_system"),
+                        "code": d.get("product_or_service_code"),
+                        "display": d.get("product_or_service_description")
+                    }]},
+                    "quantity": {"value": d.get("quantity")} if d.get("quantity") is not None else None,
+                    "unitPrice": {"value": d.get("unit_price")} if d.get("unit_price") is not None else None,
+                    "net": {"value": d.get("net")} if d.get("net") is not None else None,
+                    "extension": [{"url": ext_base + "tax", "valueDecimal": d.get("tax")}]
+                    if d.get("tax") is not None else None
+                }
+                details.append({k: v for k, v in detail.items() if v is not None})
+            return details
+
+        item = []
+        for it in item_list:
+            entry = {
+                "sequence": it.get("sequence"),
+                "productOrService": {"coding": [{
+                    "system": it.get("product_or_service_system"),
+                    "code": it.get("product_or_service_code"),
+                    "display": it.get("product_or_service_description")
+                }]},
+                "quantity": {"value": it.get("quantity")} if it.get("quantity") is not None else None,
+                "unitPrice": {"value": it.get("unit_price")} if it.get("unit_price") is not None else None,
+                "factor": it.get("factor"),
+                "net": {"value": it.get("net")} if it.get("net") is not None else None,
+                "bodySite": {"coding": [{"code": it.get("body_site")}]} if it.get("body_site") else None,
+                "subSite": [{"coding": [{"code": it.get("sub_site")}]}] if it.get("sub_site") else None
+            }
+            if it.get("care_team_sequence") is not None:
+                entry["careTeamSequence"] = [it.get("care_team_sequence")]
+            if it.get("diagnosis_sequence") is not None:
+                entry["diagnosisSequence"] = [it.get("diagnosis_sequence")]
+            if it.get("information_sequence") is not None:
+                entry["informationSequence"] = [it.get("information_sequence")]
+            if it.get("serviced_start") or it.get("serviced_end"):
+                entry["servicedPeriod"] = {"start": it.get("serviced_start"), "end": it.get("serviced_end")}
+            elif it.get("serviced_date"):
+                entry["servicedDate"] = it.get("serviced_date")
+
+            extensions = []
+            for field, key in [
+                ("batch_number", "batch-number"), ("expiry_date", "expiry-date"),
+                ("patient_share", "patient-share"), ("payer_share", "payer-share"),
+                ("serial_number", "serial-number"), ("teleconsultation", "teleconsultation"),
+                ("package_extenstion", "package-extension"), ("payer_code", "payer-code"),
+                ("payer_code_display", "payer-code-display"), ("payer_code_system", "payer-code-system"),
+                ("tax", "tax")
+            ]:
+                value = it.get(field)
+                if value is not None and value != "":
+                    extensions.append({"url": ext_base + key, "valueString": str(value)})
+            if extensions:
+                entry["extension"] = extensions
+
+            details = _build_detail(it.get("id"))
+            if details:
+                entry["detail"] = details
+
+            item.append({k: v for k, v in entry.items() if v is not None})
+
+        insurance = []
+        for idx, ins in enumerate(insurance_list, start=1):
+            insurance.append({
+                "sequence": ins.get("sequence") or idx,
+                "focal": bool(ins.get("focal")),
+                "coverage": {"reference": f"Coverage/{ins.get('coverage_identifier') or patient_identifier}"}
+            })
+        if not insurance:
+            insurance = [{"sequence": 1, "focal": True, "coverage": {"reference": f"Coverage/{patient_identifier}"}}]
+
+        related = []
+        for rel in related_list:
+            entry = {
+                "relationship": {"coding": [{"code": rel.get("relationship")}]} if rel.get("relationship") else None,
+                "reference": {"value": rel.get("claim_identifier")} if rel.get("claim_identifier") else None
+            }
+            related.append({k: v for k, v in entry.items() if v is not None})
+
+        claim_resource = {
+            "resourceType": "Claim",
+            "id": claim_id,
+            "meta": {
+                "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/claim|1.0.0"]
+            },
+            "identifier": [{
+                "system": claim.get("identifier_system"),
+                "value": claim.get("identifier")
+            }] if claim.get("identifier") else [],
+            "status": claim.get("status", "active"),
+            "type": {"coding": [{"code": claim.get("type")}]} if claim.get("type") else None,
+            "subType": {"coding": [{"code": claim.get("sub_type")}]} if claim.get("sub_type") else None,
+            "use": claim.get("use", "preauthorization"),
+            "patient": {"reference": f"Patient/{patient_identifier}"},
+            "created": _format_datetime(claim.get("created")),
+            "insurer": {"reference": f"Organization/{insurer_identifier}"},
+            "provider": {"reference": f"Organization/{provider_identifier}"},
+            "priority": {"coding": [{"code": claim.get("priority")}]} if claim.get("priority") else None,
+            "related": related,
+            # diagnosis / careTeam intentionally omitted - see docstring
+            "supportingInfo": supporting_info,
+            "insurance": insurance,
+            "item": item,
+            "total": {"value": claim.get("total")} if claim.get("total") is not None else None
+        }
+        if claim.get("billable_start") or claim.get("billable_end"):
+            claim_resource["billablePeriod"] = {
+                "start": claim.get("billable_start"),
+                "end": claim.get("billable_end")
+            }
+
+        claim_resource = {k: v for k, v in claim_resource.items() if v not in (None, [], {})}
+
+        fhir_bundle = {
+            "resourceType": "Bundle",
+            "id": bundle_id,
+            "meta": {
+                "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/bundle|1.0.0"]
+            },
+            "type": "message",
+            "timestamp": datetime.utcnow().isoformat(),
+            "entry": [
+                {
+                    "fullUrl": f"http://{provider_identifier}.Dhamani.om/MessageHeader/{message_header_id}",
+                    "resource": {
+                        "resourceType": "MessageHeader",
+                        "id": message_header_id,
+                        "meta": {
+                            "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/message-header|1.0.0"]
+                        },
+                        "eventCoding": {
+                            "system": "http://dhamani.om/terminology/CodeSystem/om-message-events",
+                            "code": message_header_in.get("event_coding", "preauth-request")
+                        },
+                        "destination": [{
+                            "endpoint": f"http://{insurer_identifier}.Dhamani.om/$process-message",
+                            "receiver": {
+                                "type": "Organization",
+                                "identifier": {
+                                    "system": "http://dhamani.om/license/payer-license",
+                                    "value": message_header_in.get("destination_receiver_identifier") or insurer_identifier
+                                }
+                            }
+                        }],
+                        "sender": {
+                            "type": "Organization",
+                            "identifier": {
+                                "system": "http://dhamani.om/license/provider-license",
+                                "value": message_header_in.get("sender_identifier") or provider_identifier
+                            }
+                        },
+                        "source": {"endpoint": f"http://{provider_identifier}.Dhamani.om"},
+                        "focus": [{
+                            "reference": message_header_in.get("focus")
+                            or f"http://{provider_identifier}.Dhamani.om/Claim/{claim_id}"
+                        }]
+                    }
+                },
+                {
+                    "fullUrl": f"http://{provider_identifier}.Dhamani.om/Claim/{claim_id}",
+                    "resource": claim_resource
+                },
+                {
+                    "fullUrl": f"http://{provider_identifier}.Dhamani.om/Patient/{patient_identifier}",
+                    "resource": {
+                        "resourceType": "Patient",
+                        "id": patient_identifier,
+                        "meta": {
+                            "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/patient|1.0.0"]
+                        },
+                        "identifier": [{
+                            "type": {
+                                "coding": [{
+                                    "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                                    "code": claim.get("patient_identifier_type", "NI")
+                                }]
+                            },
+                            "system": claim.get("patient_identifier_system"),
+                            "value": patient_identifier
+                        }],
+                        "name": [{"text": claim.get("patient_name")}] if claim.get("patient_name") else [],
+                        "gender": claim.get("patient_gender"),
+                        "birthDate": claim.get("patient_birth_date"),
+                        "telecom": [{"value": claim.get("patient_telecom")}] if claim.get("patient_telecom") else []
+                    }
+                },
+                {
+                    "fullUrl": f"http://{provider_identifier}.Dhamani.om/Organization/{provider_identifier}",
+                    "resource": {
+                        "resourceType": "Organization",
+                        "id": provider_identifier,
+                        "meta": {
+                            "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/provider-organization|1.0.0"]
+                        },
+                        "identifier": [{
+                            "system": "http://dhamani.om/license/provider-license",
+                            "value": provider_identifier
+                        }],
+                        "active": True,
+                        "type": [{
+                            "coding": [{
+                                "system": "http://dhamani.om/terminology/CodeSystem/organization-type",
+                                "code": "prov"
+                            }]
+                        }],
+                        "name": claim.get("provider_name")
+                    }
+                },
+                {
+                    "fullUrl": f"http://{provider_identifier}.Dhamani.om/Organization/{insurer_identifier}",
+                    "resource": {
+                        "resourceType": "Organization",
+                        "id": insurer_identifier,
+                        "meta": {
+                            "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/insurer-organization|1.0.0"]
+                        },
+                        "identifier": [{
+                            "system": "http://dhamani.om/license/payer-license",
+                            "value": insurer_identifier
+                        }],
+                        "active": True,
+                        "type": [{
+                            "coding": [{
+                                "system": "http://dhamani.om/terminology/CodeSystem/organization-type",
+                                "code": "ins"
+                            }]
+                        }],
+                        "name": claim.get("insurer_name")
+                    }
+                }
+            ]
+        }
+
+        for ins in insurance_list:
+            coverage_id = ins.get("coverage_identifier")
+            if not coverage_id:
+                continue
+            fhir_bundle["entry"].append({
+                "fullUrl": f"http://{provider_identifier}.Dhamani.om/Coverage/{coverage_id}",
+                "resource": {
+                    "resourceType": "Coverage",
+                    "id": coverage_id,
+                    "meta": {
+                        "profile": ["http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition/coverage|1.0.0"]
+                    },
+                    "status": "active",
+                    "beneficiary": {"reference": f"Patient/{patient_identifier}"},
+                    "payor": [{"reference": f"Organization/{insurer_identifier}"}]
+                }
+            })
+
+        logger.info(f"✅ Transformed PreAuth JSON to FHIR Claim Bundle: {bundle_id}")
+        return fhir_bundle
+
+    except Exception as e:
+        logger.error(f"❌ Error transforming PreAuth JSON to FHIR Claim: {e}")
+        raise
+
+
 def validate_fhir_patient(fhir_bundle: Dict[str, Any]) -> tuple[bool, Optional[list]]:
     """
     Validate a Dhamani eligibility request Bundle

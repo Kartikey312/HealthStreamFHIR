@@ -8,6 +8,7 @@ import uuid
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 import sys
 import os
 
@@ -18,7 +19,7 @@ from shared import (
     PatientRequest, EligibilityResponseIn, TransactionResponse, get_db,
     create_kafka_producer, send_kafka_message, TOPICS,
     Transaction, Base, engine,
-    json_to_fhir_response
+    json_to_fhir_response, json_to_fhir_claim
 )
 
 # Configure logging
@@ -219,6 +220,94 @@ async def create_response(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process eligibility response: {str(e)}"
+        )
+
+
+@app.post("/preauth/{claim_id}", tags=["PreAuth"])
+async def get_preauth_claim(
+    claim_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Call usp_get_preauth_claims_details_by_claim_id for the given claim id
+    (matched against claim.id, claim.identifier, or
+    claim.eligibility_response_identifier), and publish the resulting JSON
+    for downstream JSON-to-FHIR conversion.
+
+    Flow: MySQL SP -> JSON -> Kafka (preauth.json)
+    """
+    try:
+        result = db.execute(
+            text("CALL usp_get_preauth_claims_details_by_claim_id(:claim_id)"),
+            {"claim_id": claim_id}
+        )
+        row = result.fetchone()
+        db.commit()
+
+        if not row or not row[0]:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No claim found for id '{claim_id}'"
+            )
+
+        preauth_json = json.loads(row[0])
+
+        logger.info(f"📥 Fetched PreAuth claim data for: {claim_id}")
+        logger.info(f"📦 PreAuth JSON:\n{json.dumps(preauth_json, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "payload": preauth_json
+        }
+
+        logger.info(f"📤 Publishing to preauth.json:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_json"],
+            claim_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ PreAuth JSON published to preauth.json: {claim_id}")
+
+        fhir_bundle = json_to_fhir_claim(preauth_json)
+
+        logger.info(f"📦 Transformed PreAuth JSON to FHIR Claim Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
+
+        fhir_kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "fhir_resource": fhir_bundle
+        }
+
+        logger.info(f"📤 Publishing to preauth.fhir.outgoing:\n{json.dumps(fhir_kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_fhir_outgoing"],
+            claim_id,
+            fhir_kafka_message
+        )
+
+        logger.info(f"✅ PreAuth FHIR Bundle published to preauth.fhir.outgoing: {claim_id}")
+
+        return {
+            "status": "ACCEPTED",
+            "message": "PreAuth claim data fetched, converted to FHIR, and published to Kafka",
+            "claim_id": claim_id,
+            "preauth_json": preauth_json,
+            "fhir_bundle": fhir_bundle
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error fetching/publishing preauth claim: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process preauth claim: {str(e)}"
         )
 
 

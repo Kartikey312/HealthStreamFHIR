@@ -18,7 +18,7 @@ from .kafka_utils import (
 )
 from .fhir_utils import (
     json_to_fhir_patient, fhir_to_json_response, validate_fhir_patient,
-    fhir_to_json_request, json_to_fhir_response
+    fhir_to_json_request, json_to_fhir_response, json_to_fhir_claim
 )
 
 __all__ = [
@@ -29,5 +29,5 @@ __all__ = [
     "create_kafka_producer", "create_kafka_consumer", "send_kafka_message",
     "consume_kafka_messages", "TOPICS",
     "json_to_fhir_patient", "fhir_to_json_response", "validate_fhir_patient",
-    "fhir_to_json_request", "json_to_fhir_response"
+    "fhir_to_json_request", "json_to_fhir_response", "json_to_fhir_claim"
 ]
