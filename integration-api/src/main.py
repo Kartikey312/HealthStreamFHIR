@@ -82,47 +82,46 @@ async def health_check():
     }
 
 
-@app.post("/patient", response_model=TransactionResponse, tags=["Patients"])
+@app.post("/patient", response_model=TransactionResponse, tags=["Eligibility"])
 async def create_patient(
     patient_data: PatientRequest,
     db: Session = Depends(get_db)
 ):
     """
-    Accept patient JSON data and publish to Kafka
-    
+    Accept a flattened CoverageEligibilityRequest JSON and publish to Kafka
+
     Flow: JSON Input → Kafka (json.request) → JSON-FHIR Service
     """
     try:
         # Generate unique transaction ID
         transaction_id = f"TXN-{uuid.uuid4().hex[:12].upper()}"
-        
-        # Validate patient data
-        if not patient_data.patient_id or not patient_data.name:
+
+        if not patient_data.patientIdentifier or not patient_data.insurerIdentifier or not patient_data.providerIdentifier:
             raise HTTPException(
                 status_code=400,
-                detail="patient_id and name are required"
+                detail="patientIdentifier, insurerIdentifier and providerIdentifier are required"
             )
-        
+
         # Create transaction record
         transaction = Transaction(
             transaction_id=transaction_id,
-            patient_id=patient_data.patient_id,
-            patient_name=patient_data.name,
+            patient_id=patient_data.patientIdentifier,
+            patient_name=patient_data.providerName,
             status="PENDING",
             json_payload=json.dumps(patient_data.dict())
         )
         db.add(transaction)
         db.commit()
         db.refresh(transaction)
-        
+
         logger.info(f"📝 Created transaction: {transaction_id}")
         logger.info(f"📦 Incoming JSON payload:\n{json.dumps(patient_data.dict(), indent=2, default=str)}")
 
         # Publish to Kafka
         kafka_message = {
             "transaction_id": transaction_id,
-            "patient_id": patient_data.patient_id,
-            "patient_name": patient_data.name,
+            "patient_id": patient_data.patientIdentifier,
+            "patient_name": patient_data.providerName,
             "status": patient_data.status,
             "payload": patient_data.dict()
         }
@@ -135,27 +134,27 @@ async def create_patient(
             transaction_id,
             kafka_message
         )
-        
+
         # Update transaction status
         transaction.status = "PROCESSING"
         db.commit()
-        
-        logger.info(f"✅ Patient {patient_data.patient_id} published to Kafka")
-        
+
+        logger.info(f"✅ Eligibility request for patient {patient_data.patientIdentifier} published to Kafka")
+
         return TransactionResponse(
             status="ACCEPTED",
-            message="Patient data published to Kafka successfully",
+            message="Eligibility request published to Kafka successfully",
             transaction_id=transaction_id,
             data=patient_data.dict()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error processing patient: {e}", exc_info=True)
+        logger.error(f"❌ Error processing eligibility request: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process patient data: {str(e)}"
+            detail=f"Failed to process eligibility request: {str(e)}"
         )
 
 

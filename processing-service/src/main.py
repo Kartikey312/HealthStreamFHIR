@@ -34,8 +34,9 @@ async def process_final_response(message):
         logger.info(f"📥 Received final JSON response: {key}")
         
         transaction_id = value.get("transaction_id")
-        internal_patient_id = value.get("internal_patient_id")
-        external_reference_id = value.get("external_reference_id")
+        patient_identifier = value.get("patientIdentifier")
+        outcome = value.get("outcome")
+        disposition = value.get("disposition")
         sync_status = value.get("sync_status")
         completed_at = value.get("completed_at")
 
@@ -57,20 +58,21 @@ async def process_final_response(message):
             # Create response mapping
             response_mapping = ResponseMapping(
                 transaction_id=transaction_id,
-                original_json=json.dumps({"patient_id": internal_patient_id}),
+                original_json=json.dumps({"patient_id": patient_identifier}),
                 final_json=json.dumps(value),
                 status="COMPLETED"
             )
             db.add(response_mapping)
             db.commit()
-            
+
             # Log completion
             logger.info("=" * 60)
             logger.info("🎉 END-TO-END FLOW COMPLETE!")
             logger.info("=" * 60)
             logger.info(f"Transaction ID: {transaction_id}")
-            logger.info(f"Internal Patient ID: {internal_patient_id}")
-            logger.info(f"External Reference ID: {external_reference_id}")
+            logger.info(f"Patient Identifier: {patient_identifier}")
+            logger.info(f"Outcome: {outcome}")
+            logger.info(f"Disposition: {disposition}")
             logger.info(f"Sync Status: {sync_status}")
             logger.info(f"Completed At: {completed_at}")
             logger.info("=" * 60)

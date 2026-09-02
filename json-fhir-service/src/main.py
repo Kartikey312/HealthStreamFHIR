@@ -56,44 +56,44 @@ async def process_json_message(message):
                 transaction.status = "PROCESSING"
                 db.commit()
             
-            # Transform JSON to FHIR
-            logger.info(f"🔄 Transforming patient {patient_id} to FHIR...")
-            fhir_patient = json_to_fhir_patient(patient_data)
-            
+            # Transform JSON to FHIR eligibility Bundle
+            logger.info(f"🔄 Transforming eligibility request for {patient_id} to FHIR...")
+            fhir_bundle = json_to_fhir_patient(patient_data)
+
             # Validate FHIR
-            is_valid, errors = validate_fhir_patient(fhir_patient)
-            
+            is_valid, errors = validate_fhir_patient(fhir_bundle)
+
             if not is_valid:
                 logger.error(f"❌ FHIR validation failed: {errors}")
                 if transaction:
                     transaction.status = "FAILED"
                     db.commit()
                 return
-            
-            logger.info(f"✅ FHIR Patient validated: {fhir_patient['id']}")
-            logger.info(f"📦 Transformed FHIR resource:\n{json.dumps(fhir_patient, indent=2, default=str)}")
-            
+
+            logger.info(f"✅ FHIR eligibility Bundle validated: {fhir_bundle['id']}")
+            logger.info(f"📦 Transformed FHIR resource:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
+
             # Store in database
             fhir_request = FHIRRequest(
                 transaction_id=transaction_id,
-                request_id=fhir_patient["id"],
-                fhir_resource_type="Patient",
-                fhir_payload=json.dumps(fhir_patient),
+                request_id=fhir_bundle["id"],
+                fhir_resource_type="Bundle",
+                fhir_payload=json.dumps(fhir_bundle),
                 validation_status="VALID"
             )
             db.add(fhir_request)
-            
+
             if transaction:
-                transaction.fhir_payload = json.dumps(fhir_patient)
-            
+                transaction.fhir_payload = json.dumps(fhir_bundle)
+
             db.commit()
-            
+
             # Publish to next topic
             kafka_message = {
                 "transaction_id": transaction_id,
                 "patient_id": patient_id,
                 "patient_name": patient_name,
-                "fhir_resource": fhir_patient
+                "fhir_resource": fhir_bundle
             }
             
             logger.info(f"📤 Publishing to fhir.outgoing:\n{json.dumps(kafka_message, indent=2, default=str)}")

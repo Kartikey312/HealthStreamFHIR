@@ -40,47 +40,46 @@ async def process_fhir_response(message):
         patient_id = value.get("patient_id")
         fhir_response = value.get("fhir_response", {})
 
-        logger.info(f"📦 Incoming FHIR response:\n{json.dumps(value, indent=2, default=str)}")
+        logger.info(f"📦 Incoming FHIR Bundle:\n{json.dumps(value, indent=2, default=str)}")
 
         # Get database session
         db = SessionLocal()
-        
+
         try:
+            # Transform FHIR Bundle back to flattened JSON
+            logger.info(f"🔄 Transforming FHIR eligibility response to JSON for {patient_id}...")
+            json_response = fhir_to_json_response(fhir_response, patient_id)
+            logger.info(f"📦 Transformed JSON response:\n{json.dumps(json_response, indent=2, default=str)}")
+
+            sync_status = json_response.get("sync_status")
+
             # Store FHIR response in database
             fhir_response_record = FHIRResponse(
                 transaction_id=transaction_id,
-                response_id=fhir_response.get("id", f"RESP-{key}"),
+                response_id=fhir_response.get("id") or f"RESP-{key}",
                 fhir_payload=json.dumps(fhir_response),
-                hospital_response_code=fhir_response.get("code", 200),
-                hospital_response_message=fhir_response.get("message", "OK"),
+                hospital_response_code=201 if sync_status == "SUCCESS" else 400,
+                hospital_response_message=json_response.get("disposition") or json_response.get("outcome"),
                 received_at=datetime.utcnow()
             )
             db.add(fhir_response_record)
-            
+
             # Update transaction
             transaction = db.query(Transaction).filter(
                 Transaction.transaction_id == transaction_id
             ).first()
-            
-            if transaction:
-                transaction.status = "SUCCESS" if fhir_response.get("code") == 201 else "FAILED"
-            
-            db.commit()
-            
-            # Transform FHIR back to JSON
-            logger.info(f"🔄 Transforming FHIR response to JSON for patient {patient_id}...")
-            json_response = fhir_to_json_response(fhir_response, patient_id)
-            logger.info(f"📦 Transformed JSON response:\n{json.dumps(json_response, indent=2, default=str)}")
 
-            # Publish to next topic
+            if transaction:
+                transaction.status = sync_status
+
+            db.commit()
+
+            # Publish to next topic - carry the full flattened eligibility response
             kafka_message = {
                 "transaction_id": transaction_id,
-                "internal_patient_id": json_response["internal_patient_id"],
-                "external_reference_id": json_response["external_reference_id"],
-                "sync_status": json_response["sync_status"],
-                "completed_at": json_response["completed_at"]
+                **json_response
             }
-            
+
             logger.info(f"📤 Publishing to json.response:\n{json.dumps(kafka_message, indent=2, default=str)}")
 
             await send_kafka_message(

@@ -84,8 +84,8 @@ async def health_check():
 @app.post("/fhir/response", tags=["FHIR"])
 async def receive_fhir_response(response: HospitalResponse):
     """
-    Receive FHIR response from hospital/Dhamani system
-    
+    Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani system
+
     Flow: Dhamani → Communication Service → Kafka (fhir.incoming) → FHIR-JSON Service
     """
     try:
@@ -95,29 +95,20 @@ async def receive_fhir_response(response: HospitalResponse):
                 status_code=400,
                 detail="original_id is required"
             )
-        
+
         # Generate response ID
         response_id = f"RESP-{uuid.uuid4().hex[:12].upper()}"
-        
-        logger.info(f"📨 Received FHIR response from hospital: {response_id}")
-        logger.info(f"📦 Incoming hospital response:\n{json.dumps(response.dict(), indent=2, default=str)}")
 
-        # Create Kafka message
+        logger.info(f"📨 Received FHIR response from hospital: {response_id}")
+        logger.info(f"📦 Incoming hospital FHIR Bundle:\n{json.dumps(response.dict(), indent=2, default=str)}")
+
+        # Create Kafka message - pass the raw Dhamani Bundle straight through
         kafka_message = {
             "transaction_id": response.original_id,
             "patient_id": response.original_id,
-            "fhir_response": {
-                "id": response.hospital_system_id,
-                "code": 201 if response.status == "201 Created" else 400,
-                "message": response.status,
-                "timestamp": response.timestamp.isoformat(),
-                "originalId": response.original_id,
-                "hospitalSystemId": response.hospital_system_id,
-                "status": response.status,
-                "fhir_resource": response.fhir_response
-            }
+            "fhir_response": response.fhir_response
         }
-        
+
         logger.info(f"📤 Publishing to fhir.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
 
         # Publish to Kafka

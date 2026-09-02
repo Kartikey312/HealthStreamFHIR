@@ -6,15 +6,37 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
-class PatientBase(BaseModel):
-    patient_id: str
-    name: str
-    status: str = "new_admission"
+class MessageHeaderIn(BaseModel):
+    """Nested messageHeader block of a flattened eligibility request"""
+    id: Optional[str] = None
+    eventCoding: Optional[str] = None
+    destinationReceiverIdentifier: Optional[str] = None
+    senderIdentifier: Optional[str] = None
+    focus: Optional[str] = None
 
 
-class PatientRequest(PatientBase):
-    """Schema for incoming patient JSON"""
-    pass
+class PatientRequest(BaseModel):
+    """Schema for an incoming flattened CoverageEligibilityRequest JSON"""
+    id: Optional[str] = None
+    resourceType: Optional[str] = "CoverageEligibilityRequest"
+    identifier: Optional[str] = None
+    identifierSystem: Optional[str] = None
+    status: str = "active"
+    priority: Optional[str] = "normal"
+    purpose: List[str] = Field(default_factory=lambda: ["discovery"])
+    patientIdentifier: str
+    patientIdentifierType: Optional[str] = "NI"
+    patientIdentifierSystem: Optional[str] = None
+    servicedDate: Optional[str] = None
+    created: Optional[str] = None
+    insurerIdentifier: str
+    insurerIdentifierType: Optional[str] = None
+    insurerName: Optional[str] = None
+    providerIdentifier: str
+    providerIdentifierType: Optional[str] = None
+    providerName: Optional[str] = None
+    insurances: List[Dict[str, Any]] = Field(default_factory=list)
+    messageHeader: MessageHeaderIn = Field(default_factory=MessageHeaderIn)
 
 
 class FHIRPatientResource(BaseModel):
@@ -52,11 +74,8 @@ class FHIRValidationResult(BaseModel):
 
 
 class HospitalResponse(BaseModel):
-    """Response from hospital system"""
+    """CoverageEligibilityResponse Bundle callback from hospital/Dhamani system"""
     original_id: str
-    hospital_system_id: str
-    status: str
-    timestamp: datetime
     fhir_response: Dict[str, Any]
 
 
