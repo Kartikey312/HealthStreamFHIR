@@ -3,11 +3,11 @@ import type { WorkflowNodeData } from "../../types/workflow";
 import { useWorkflowStore } from "../../store/workflowStore";
 
 const STATUS_COLOR: Record<string, string> = {
-  IDLE: "#4b5563",
-  RUNNING: "#eab308",
-  SUCCESS: "#22c55e",
-  FAILED: "#ef4444",
-  SKIPPED: "#6b7280",
+  IDLE: "var(--node-idle-border)",
+  RUNNING: "var(--warning)",
+  SUCCESS: "var(--success)",
+  FAILED: "var(--danger)",
+  SKIPPED: "var(--skip)",
 };
 
 const CATEGORY_ICON: Record<string, string> = {

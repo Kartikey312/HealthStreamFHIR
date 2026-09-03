@@ -1,6 +1,55 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
   font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+
+  /* Light theme (default) */
+  --bg-page: #f4f5f7;
+  --bg-panel: #ffffff;
+  --bg-surface: #f4f5f7;
+  --bg-surface-hover: #e9eaee;
+  --bg-canvas-mask: rgba(244, 245, 247, 0.7);
+  --border-subtle: #e2e4e9;
+  --border: #d3d6dd;
+  --text: #16181f;
+  --text-dim: #5c6270;
+  --text-faint: #9096a3;
+  --accent: #6366f1;
+  --accent-bg: rgba(99, 102, 241, 0.12);
+  --danger: #dc2626;
+  --danger-bg: rgba(220, 38, 38, 0.1);
+  --success: #16a34a;
+  --success-bg: rgba(22, 163, 74, 0.12);
+  --warning: #ca8a04;
+  --warning-bg: rgba(202, 138, 4, 0.12);
+  --skip: #6b7280;
+  --skip-bg: rgba(107, 114, 128, 0.12);
+  --node-idle-border: #9096a3;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-page: #0f1115;
+    --bg-panel: #16181f;
+    --bg-surface: #1e2129;
+    --bg-surface-hover: #262a35;
+    --bg-canvas-mask: rgba(15, 17, 21, 0.7);
+    --border-subtle: #262932;
+    --border: #2e323c;
+    --text: #e5e7eb;
+    --text-dim: #9ca3af;
+    --text-faint: #6b7280;
+    --accent: #818cf8;
+    --accent-bg: rgba(129, 140, 248, 0.15);
+    --danger: #ef4444;
+    --danger-bg: rgba(239, 68, 68, 0.15);
+    --success: #22c55e;
+    --success-bg: rgba(34, 197, 94, 0.15);
+    --warning: #eab308;
+    --warning-bg: rgba(234, 179, 8, 0.15);
+    --skip: #9ca3af;
+    --skip-bg: rgba(156, 163, 175, 0.15);
+    --node-idle-border: #4b5563;
+  }
 }
 
 * {
@@ -14,6 +63,6 @@ html, body, #root {
 }
 
 body {
-  background: #0f1115;
-  color: #e5e7eb;
+  background: var(--bg-page);
+  color: var(--text);
 }

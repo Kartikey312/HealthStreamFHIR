@@ -90,15 +90,12 @@ export function Canvas() {
         onNodeClick={(_, node) => setSelectedNode(node.id)}
         onPaneClick={() => setSelectedNode(null)}
         nodeTypes={nodeTypesMap}
+        colorMode="system"
         fitView
       >
         <Background />
         <Controls />
-        <MiniMap
-          style={{ background: "#1e2129" }}
-          maskColor="rgba(15, 17, 21, 0.7)"
-          nodeColor="#4b5563"
-        />
+        <MiniMap />
       </ReactFlow>
     </div>
   );
