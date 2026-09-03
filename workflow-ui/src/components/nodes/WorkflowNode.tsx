@@ -1,5 +1,6 @@
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import type { WorkflowNodeData } from "../../types/workflow";
+import { useWorkflowStore } from "../../store/workflowStore";
 
 const STATUS_COLOR: Record<string, string> = {
   IDLE: "#4b5563",
@@ -15,9 +16,10 @@ const CATEGORY_ICON: Record<string, string> = {
   utility: "\u{1F441}", // 👁
 };
 
-export function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData>>) {
+export function WorkflowNode({ id, data, selected }: NodeProps<Node<WorkflowNodeData>>) {
   const status = data.status || "IDLE";
   const borderColor = STATUS_COLOR[status] || STATUS_COLOR.IDLE;
+  const removeNode = useWorkflowStore((s) => s.removeNode);
 
   return (
     <div
@@ -27,6 +29,17 @@ export function WorkflowNode({ data, selected }: NodeProps<Node<WorkflowNodeData
         boxShadow: selected ? `0 0 0 2px ${borderColor}` : undefined,
       }}
     >
+      <button
+        type="button"
+        className="workflow-node-remove"
+        title="Remove node"
+        onClick={(e) => {
+          e.stopPropagation();
+          removeNode(id);
+        }}
+      >
+        ✕
+      </button>
       <Handle type="target" position={Position.Left} />
       <div className="workflow-node-header">
         <span className="workflow-node-icon">{CATEGORY_ICON[data.category] ?? "⚙"}</span>

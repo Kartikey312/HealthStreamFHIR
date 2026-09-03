@@ -21,7 +21,13 @@ async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: Execu
     if not procedure:
         raise ValueError("db_query node requires a procedure name")
 
-    params = resolve_dict(config.get("params"), input_data)
+    raw_params = config.get("params") or {}
+    # Trim whitespace on keys - the config panel's keyvalue rows are free-text
+    # inputs, and a stray leading/trailing space (easy to introduce by typing
+    # or pasting) would otherwise silently produce a bind name that doesn't
+    # match anything, breaking the whole call with a confusing SQL error.
+    trimmed_params = {str(k).strip(): v for k, v in raw_params.items() if str(k).strip()}
+    params = resolve_dict(trimmed_params, input_data)
     call_sql = f"CALL {procedure}(" + ", ".join(f":{k}" for k in params.keys()) + ")"
 
     # This runs inside a background asyncio task, not a request, so there's no

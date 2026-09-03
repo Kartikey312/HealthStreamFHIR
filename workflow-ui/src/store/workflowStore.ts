@@ -24,6 +24,7 @@ interface WorkflowState {
   setWorkflowMeta: (id: number | null, name: string, description: string) => void;
   loadGraph: (nodes: Node<WorkflowNodeData>[], edges: Edge[]) => void;
   addNode: (node: Node<WorkflowNodeData>) => void;
+  removeNode: (nodeId: string) => void;
   updateNodeConfig: (nodeId: string, config: Record<string, unknown>) => void;
   updateNodeStatuses: (statusByNodeId: Record<string, NodeStatus>) => void;
   clearNodeStatuses: () => void;
@@ -50,6 +51,14 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   loadGraph: (nodes, edges) => set({ nodes, edges, dirty: false, selectedNodeId: null }),
 
   addNode: (node) => set((state) => ({ nodes: [...state.nodes, node], dirty: true })),
+
+  removeNode: (nodeId) =>
+    set((state) => ({
+      nodes: state.nodes.filter((n) => n.id !== nodeId),
+      edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
+      selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
+      dirty: true,
+    })),
 
   updateNodeConfig: (nodeId, config) =>
     set((state) => ({

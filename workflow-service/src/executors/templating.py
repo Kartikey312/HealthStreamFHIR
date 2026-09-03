@@ -9,8 +9,12 @@ from typing import Any, Dict, Optional
 
 
 def resolve(value: Any, input_data: Dict[str, Any]) -> Any:
-    if isinstance(value, str) and value.startswith("$input"):
-        path = value[len("$input"):].lstrip(".")
+    # Config panel fields are free-text - tolerate accidental leading/trailing
+    # whitespace from typing or pasting rather than silently treating
+    # " $input.x" as a literal string.
+    stripped = value.strip() if isinstance(value, str) else value
+    if isinstance(stripped, str) and stripped.startswith("$input"):
+        path = stripped[len("$input"):].lstrip(".")
         if not path:
             return input_data
         current: Any = input_data

@@ -38,7 +38,7 @@ function App() {
 
   const createWorkflow = useCreateWorkflow();
   const saveWorkflow = useSaveWorkflow(workflowId ?? -1);
-  const runWorkflow = useRunWorkflow(workflowId ?? -1);
+  const runWorkflow = useRunWorkflow();
 
   // Hydrate the canvas when a workflow is loaded from the server
   useEffect(() => {
@@ -89,23 +89,35 @@ function App() {
     setActiveRunId(null);
   };
 
-  const handleSave = async () => {
+  // Returns the workflow's id once persisted, so callers (e.g. Run) always
+  // have a definitive id to act on regardless of whether this was a
+  // create-then-save-again render cycle.
+  const persistWorkflow = async (): Promise<number> => {
     const body = { name, description, definition: toDefinition() };
-    if (workflowId) {
+    let id = workflowId;
+    if (id) {
       await saveWorkflow.mutateAsync(body);
     } else {
       const created = await createWorkflow.mutateAsync(body);
+      id = created.id;
       setWorkflowMeta(created.id, created.name, created.description ?? "");
       setSelectedWorkflowId(created.id);
     }
     markClean();
     refetchWorkflows();
+    return id;
   };
 
+  const handleSave = () => persistWorkflow();
+
   const handleRun = async () => {
-    if (!workflowId) return;
+    // Run always executes the last SAVED definition (the backend has no way
+    // to run unsaved in-browser state), so save first unconditionally -
+    // otherwise a config edit you forgot to save silently re-runs the old
+    // graph and any error from the stale version keeps recurring.
+    const id = await persistWorkflow();
     clearNodeStatuses();
-    const result = await runWorkflow.mutateAsync(undefined);
+    const result = await runWorkflow.mutateAsync({ workflowId: id });
     setActiveRunId(result.run_id);
     setRightTab("runs");
   };
@@ -133,7 +145,7 @@ function App() {
         <button onClick={handleSave} disabled={!dirty && !!workflowId}>
           {dirty ? "Save*" : "Save"}
         </button>
-        <button onClick={handleRun} disabled={!workflowId || runWorkflow.isPending}>
+        <button onClick={handleRun} disabled={nodes.length === 0 || runWorkflow.isPending}>
           ▶ Run
         </button>
       </header>

@@ -83,9 +83,12 @@ export function useDeleteWorkflow() {
   });
 }
 
-export function useRunWorkflow(workflowId: number) {
+export function useRunWorkflow() {
   return useMutation({
-    mutationFn: (triggerInput: Record<string, unknown> | undefined) =>
+    // workflowId is passed per-call (not bound at hook-creation time) so a
+    // just-created workflow can be run immediately in the same handler,
+    // without waiting for a re-render to pick up the new id.
+    mutationFn: ({ workflowId, triggerInput }: { workflowId: number; triggerInput?: Record<string, unknown> }) =>
       apiFetch<RunAccepted>(`/workflows/${workflowId}/run`, {
         method: "POST",
         body: JSON.stringify({ trigger_input: triggerInput }),

@@ -226,12 +226,38 @@
 
 /* Custom node */
 .workflow-node {
+  position: relative;
   min-width: 160px;
   background: #1e2129;
   border: 2px solid #4b5563;
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 13px;
+}
+
+.workflow-node-remove {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ef4444;
+  color: #fff;
+  border: 2px solid #16181f;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.workflow-node:hover .workflow-node-remove {
+  opacity: 1;
 }
 
 .workflow-node-header {
