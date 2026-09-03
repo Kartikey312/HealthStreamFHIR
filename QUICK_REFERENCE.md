@@ -100,6 +100,8 @@ python src/main.py
 |---------|------|---------|
 | Integration API | 8000 | Submit patient data |
 | Communication Service | 8001 | Receive hospital response |
+| Workflow Service | 8002 | Workflow builder API (CRUD + execution engine) |
+| Workflow UI | 5173 | Workflow builder canvas (drag-and-drop editor) |
 | Kafka UI | 8080 | Kafka monitoring |
 | MySQL | 3306 | Database access |
 | Zookeeper | 2181 | Kafka coordination |

@@ -170,5 +170,43 @@ services:
       - ./shared:/shared
     command: python -m uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
 
+  # Workflow Service - FastAPI
+  workflow-service:
+    build:
+      context: .
+      dockerfile: ./workflow-service/Dockerfile
+    container_name: workflow-service
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./workflow-service:/app
+      - ./shared:/shared
+    command: python -m uvicorn src.main:app --host 0.0.0.0 --port 8002 --reload
+
+  # Workflow UI - Vite/React
+  workflow-ui:
+    build:
+      context: .
+      dockerfile: ./workflow-ui/Dockerfile
+    container_name: workflow-ui
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE_URL: http://localhost:8002   # must be the HOST port - the browser runs this, not a container
+    depends_on:
+      - workflow-service
+    volumes:
+      - ./workflow-ui:/app
+      - /app/node_modules   # anonymous volume so the bind mount doesn't shadow installed deps
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+
 volumes:
   mysql_data:

@@ -1,0 +1,392 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Top bar */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #16181f;
+  border-bottom: 1px solid #262932;
+  flex-shrink: 0;
+}
+
+.topbar select,
+.topbar input,
+.topbar button {
+  background: #1e2129;
+  color: #e5e7eb;
+  border: 1px solid #2e323c;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.workflow-name-input {
+  flex: 1;
+  max-width: 320px;
+}
+
+.topbar button {
+  cursor: pointer;
+}
+
+.topbar button:hover:not(:disabled) {
+  border-color: #4b5563;
+}
+
+.topbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Body layout */
+.app-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.canvas-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Palette */
+.palette {
+  width: 220px;
+  flex-shrink: 0;
+  background: #16181f;
+  border-right: 1px solid #262932;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.palette h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9ca3af;
+}
+
+.palette-group {
+  margin-bottom: 14px;
+}
+
+.palette-group-label {
+  font-size: 11px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+
+.palette-item {
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  background: #1e2129;
+  border: 1px solid #2e323c;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: grab;
+}
+
+.palette-item:hover {
+  border-color: #6b7280;
+}
+
+.palette-error {
+  color: #ef4444;
+}
+
+/* Right sidebar */
+.right-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  background: #16181f;
+  border-left: 1px solid #262932;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.right-tabs {
+  display: flex;
+  border-bottom: 1px solid #262932;
+}
+
+.right-tabs button {
+  flex: 1;
+  background: none;
+  border: none;
+  color: #9ca3af;
+  padding: 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.right-tabs button.active {
+  color: #e5e7eb;
+  border-bottom: 2px solid #6366f1;
+}
+
+/* Config panel */
+.config-panel {
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.config-panel-empty {
+  padding: 20px 14px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.config-panel h3 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+.config-panel-desc {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 0 0 14px;
+}
+
+.config-field {
+  margin-bottom: 12px;
+}
+
+.config-field label {
+  display: block;
+  font-size: 11px;
+  color: #9ca3af;
+  margin-bottom: 4px;
+}
+
+.config-field input,
+.config-field select,
+.config-field textarea {
+  width: 100%;
+  background: #1e2129;
+  color: #e5e7eb;
+  border: 1px solid #2e323c;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.config-field textarea {
+  font-family: ui-monospace, monospace;
+  resize: vertical;
+}
+
+.field-error {
+  border-color: #ef4444 !important;
+}
+
+.field-error-text {
+  color: #ef4444;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.keyvalue-field .keyvalue-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.keyvalue-row input {
+  flex: 1;
+}
+
+.keyvalue-row button {
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+}
+
+.keyvalue-add {
+  background: none;
+  border: 1px dashed #2e323c;
+  color: #9ca3af;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  width: 100%;
+}
+
+/* Custom node */
+.workflow-node {
+  min-width: 160px;
+  background: #1e2129;
+  border: 2px solid #4b5563;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.workflow-node-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workflow-node-icon {
+  font-size: 14px;
+}
+
+.workflow-node-label {
+  font-weight: 500;
+}
+
+.workflow-node-status {
+  font-size: 10px;
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Run history panel */
+.run-history-panel {
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.run-history-panel h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.run-status {
+  font-weight: 600;
+}
+
+.run-status-success { color: #22c55e; }
+.run-status-failed { color: #ef4444; }
+.run-status-running { color: #eab308; }
+.run-status-skipped { color: #6b7280; }
+
+.run-error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.run-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.run-step {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #1e2129;
+  border: 1px solid #2e323c;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.run-step.selected {
+  border-color: #6366f1;
+}
+
+.run-step-type {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.run-step-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #2e323c;
+}
+
+.run-step-running .run-step-badge { background: rgba(234, 179, 8, 0.2); color: #eab308; }
+.run-step-success .run-step-badge { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+.run-step-failed .run-step-badge { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+.run-step-skipped .run-step-badge { background: rgba(107, 114, 128, 0.2); color: #9ca3af; }
+
+.step-detail {
+  border-top: 1px solid #262932;
+  padding-top: 10px;
+}
+
+.step-detail-section {
+  margin-bottom: 10px;
+}
+
+.step-detail-section h4 {
+  font-size: 11px;
+  color: #9ca3af;
+  margin: 0 0 4px;
+}
+
+.run-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.run-history-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.run-history-item:hover {
+  background: #1e2129;
+}
+
+.run-history-item.active {
+  background: #24273a;
+  border: 1px solid #6366f1;
+}
+
+.run-history-time {
+  color: #6b7280;
+  margin-left: auto;
+}
+
+.run-history-empty {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.json-viewer {
+  font-size: 12px;
+}
+
+.json-empty {
+  color: #6b7280;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.json-scalar {
+  font-size: 12px;
+  margin: 0;
+}

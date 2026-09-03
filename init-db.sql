@@ -66,6 +66,48 @@ CREATE TABLE IF NOT EXISTS response_mappings (
 );
 
 -- =====================================================================================
+-- Workflow builder tables
+-- =====================================================================================
+
+CREATE TABLE IF NOT EXISTS workflows (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(255) NOT NULL,
+  description VARCHAR(1000),
+  definition LONGTEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_workflows_name (name)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  workflow_id INT NOT NULL,
+  status ENUM('RUNNING', 'SUCCESS', 'FAILED') DEFAULT 'RUNNING',
+  trigger_input LONGTEXT,
+  error TEXT,
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  finished_at TIMESTAMP NULL,
+  FOREIGN KEY (workflow_id) REFERENCES workflows(id),
+  INDEX idx_workflow_runs_workflow_id (workflow_id),
+  INDEX idx_workflow_runs_status (status)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_run_steps (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  run_id INT NOT NULL,
+  node_id VARCHAR(255) NOT NULL,
+  node_type VARCHAR(100) NOT NULL,
+  status ENUM('RUNNING', 'SUCCESS', 'FAILED', 'SKIPPED') DEFAULT 'RUNNING',
+  input LONGTEXT,
+  output LONGTEXT,
+  error TEXT,
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  finished_at TIMESTAMP NULL,
+  FOREIGN KEY (run_id) REFERENCES workflow_runs(id),
+  INDEX idx_workflow_run_steps_run_id (run_id)
+);
+
+-- =====================================================================================
 -- PreAuth claim tables - MySQL port of the 11 tables read by the SQL Server SP
 -- USP_Get_PreAuthClaimsDetails_ByClaimId.
 --

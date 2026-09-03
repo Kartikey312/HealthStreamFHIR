@@ -7,7 +7,10 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 from .database import engine, SessionLocal, get_db
-from .models import Base, Transaction, FHIRRequest, FHIRResponse, ResponseMapping
+from .models import (
+    Base, Transaction, FHIRRequest, FHIRResponse, ResponseMapping,
+    Workflow, WorkflowRun, WorkflowRunStep
+)
 from .schemas import (
     PatientRequest, EligibilityResponseIn, FHIRPatientResource, TransactionResponse,
     KafkaMessagePayload, FHIRValidationResult, HospitalResponse, FinalJSONResponse
@@ -24,6 +27,7 @@ from .fhir_utils import (
 __all__ = [
     "engine", "SessionLocal", "get_db",
     "Base", "Transaction", "FHIRRequest", "FHIRResponse", "ResponseMapping",
+    "Workflow", "WorkflowRun", "WorkflowRunStep",
     "PatientRequest", "EligibilityResponseIn", "FHIRPatientResource", "TransactionResponse",
     "KafkaMessagePayload", "FHIRValidationResult", "HospitalResponse", "FinalJSONResponse",
     "create_kafka_producer", "create_kafka_consumer", "send_kafka_message",

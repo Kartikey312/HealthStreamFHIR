@@ -125,6 +125,24 @@ A complete microservices-based system for converting JSON patient data to FHIR f
   - `POST /fhir/response` - Receive FHIR response from hospital
   - `GET /health` - Health check
 
+### 6. Workflow Service (Port 8002)
+- **Purpose**: n8n-style drag-and-drop workflow builder - lets you compose pipelines from reusable nodes (HTTP Request, Kafka Publish, DB Stored Procedure, FHIR Transform, View), save them, and run them with a full per-node run history
+- **Technology**: FastAPI + uvicorn
+- **Database**: MySQL (`workflows`, `workflow_runs`, `workflow_run_steps`)
+- **Endpoints**:
+  - `GET /node-types` - Node palette definitions (config field schemas)
+  - `GET /topics` - Available Kafka topics for the Kafka Publish node
+  - `POST/GET/PUT/DELETE /workflows` - Workflow CRUD
+  - `POST /workflows/{id}/run` - Execute a saved workflow (returns immediately, runs in the background)
+  - `GET /runs/{run_id}` - Poll a run's status and per-node input/output
+  - `GET /workflows/{id}/runs` - Run history for a workflow
+  - `GET /health` - Health check
+
+### 7. Workflow UI (Port 5173)
+- **Purpose**: The canvas editor for the Workflow Service - drag nodes from a palette, wire them together, configure each node, save, and click Run to watch nodes light up live as they execute
+- **Technology**: React + TypeScript + Vite + React Flow (`@xyflow/react`)
+- Talks to Workflow Service over REST at `http://localhost:8002` (browser-facing, so it must be the host port, not the internal Docker DNS name)
+
 ## Database Schema
 
 ### Tables
@@ -178,6 +196,8 @@ docker-compose down
 **Services will be available at:**
 - Integration API: `http://localhost:8000`
 - Communication Service: `http://localhost:8001`
+- Workflow Service: `http://localhost:8002`
+- Workflow UI (workflow builder): `http://localhost:5173`
 - Kafka UI: `http://localhost:8080`
 - MySQL: `localhost:3306`
 

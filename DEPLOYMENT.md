@@ -42,6 +42,12 @@ curl http://localhost:8000/health
 # Test Communication Service
 curl http://localhost:8001/health
 
+# Test Workflow Service
+curl http://localhost:8002/health
+
+# Open the Workflow Builder UI
+open http://localhost:5173
+
 # Access Kafka UI
 open http://localhost:8080
 ```
