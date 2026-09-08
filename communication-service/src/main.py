@@ -1,22 +1,27 @@
 """
 Communication Service - FastAPI
-Entry point for RESPONSE-direction traffic only: inbound FHIR responses
-Dhamani/hospital sends us (POST /fhir/response) and outbound JSON->FHIR
-responses we send to Dhamani (POST /response). Request-direction traffic
-lives in integration-api.
+Naming convention only, not the data direction: endpoint paths here are
+labeled "request" (POST /fhir/request, POST /request, POST
+/preauth/{claim_id}/request, POST /preauth/{claim_id}/fhir-request) while
+integration-api's are labeled "response" - the underlying request/response
+logic each endpoint performs is unchanged. This service still functionally
+handles inbound FHIR responses and outbound JSON->FHIR responses, same as
+before.
 
 PreAuth: no response is ever generated automatically. A FHIR Claim request
 published by integration-api's /preauth/{claim_id} just sits there - still
 picked up and logged by preauth-log-service independently, same as before -
-until POST /preauth/{claim_id}/respond is explicitly called to generate and
-publish the mock ClaimResponse. (An earlier version of this service ran a
-background Kafka consumer that did this automatically the instant a request
-was published; that's been removed on purpose.)
+until either POST /preauth/{claim_id}/request (generates and publishes a MOCK
+ClaimResponse) or POST /preauth/{claim_id}/fhir-request (accepts a REAL
+ClaimResponse Bundle from Dhamani) is explicitly called. (An earlier version
+of this service ran a background Kafka consumer that generated a mock
+response automatically the instant a request was published; that's been
+removed on purpose.)
 """
 import logging
 import json
 import uuid
-from typing import Optional
+from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -98,10 +103,14 @@ async def health_check():
     }
 
 
-@app.post("/fhir/response", tags=["FHIR"])
+@app.post("/fhir/request", tags=["FHIR"])
 async def receive_fhir_response(response: HospitalResponse):
     """
     Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani system
+
+    Path is named "/fhir/request" per this service's naming convention
+    (communication-service endpoints are labeled "request") - the Bundle it
+    receives is still eligibility RESPONSE data, unchanged from before.
 
     Flow: Dhamani → Communication Service → Kafka (fhir.incoming) → FHIR-JSON Service
     """
@@ -155,7 +164,7 @@ async def receive_fhir_response(response: HospitalResponse):
         )
 
 
-@app.post("/response", tags=["Eligibility"])
+@app.post("/request", tags=["Eligibility"])
 async def create_response(
     response_data: EligibilityResponseIn,
     db: Session = Depends(get_db)
@@ -163,6 +172,11 @@ async def create_response(
     """
     Accept our flattened CoverageEligibilityResponse decision JSON, convert it
     to a FHIR Bundle, and publish it for delivery to Dhamani.
+
+    Path is named "/request" per this service's naming convention
+    (communication-service endpoints are labeled "request") - this endpoint
+    still builds and publishes an outbound eligibility RESPONSE, unchanged
+    from before.
 
     Flow: JSON Input → FHIR Bundle → Kafka (fhir.response.outgoing)
     """
@@ -218,7 +232,7 @@ async def create_response(
         )
 
 
-@app.post("/preauth/{claim_id}/respond", tags=["PreAuth"])
+@app.post("/preauth/{claim_id}/request", tags=["PreAuth"])
 async def respond_to_preauth_claim(
     claim_id: str,
     correlation_id: Optional[str] = None,
@@ -228,6 +242,10 @@ async def respond_to_preauth_claim(
     Manually generate and publish the mock PreAuth ClaimResponse for a claim
     that already has a FHIR request logged. This is the ONLY thing that
     produces a PreAuth response - nothing does this automatically anymore.
+
+    Path is named "/preauth/{claim_id}/request" per this service's naming
+    convention (communication-service endpoints are labeled "request") - it
+    still generates and publishes a mock RESPONSE, unchanged from before.
 
     Reads the FHIR request straight from preauth_request_log (written
     independently by preauth-log-service, which keeps logging every request
@@ -295,6 +313,99 @@ async def respond_to_preauth_claim(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to respond to preauth claim: {str(e)}"
+        )
+
+
+@app.post("/preauth/{claim_id}/fhir-request", tags=["PreAuth"])
+async def receive_preauth_fhir_response(
+    claim_id: str,
+    fhir_bundle: Dict[str, Any],
+    correlation_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Receive a REAL PreAuth ClaimResponse FHIR Bundle from Dhamani (as opposed
+    to /preauth/{claim_id}/request, which generates a MOCK one internally).
+
+    Path is named "/preauth/{claim_id}/fhir-request" per this service's
+    naming convention (communication-service endpoints are labeled
+    "request") - it still receives and processes a real ClaimResponse
+    RESPONSE bundle, unchanged from before.
+
+    If correlation_id isn't given as a query param, it's resolved from the
+    most recently logged FHIR_REQUEST for this claim_id, so the response can
+    be tied back to the exact request round-trip it answers.
+
+    Publishes to preauth.fhir.incoming in the same envelope shape the mock
+    path already uses, so nothing downstream needs to change: fhir-json-service
+    converts it to flattened JSON (fhir_to_json_claim_response) and publishes
+    to preauth.json.response, and preauth-log-service persists both the
+    FHIR_RESPONSE and JSON_RESPONSE stages to preauth_response_log - which is
+    also what the Excel export reads from, so it shows up there automatically.
+
+    Flow: Dhamani -> Communication Service -> Kafka (preauth.fhir.incoming)
+          -> fhir-json-service -> Kafka (preauth.json.response)
+          -> preauth-log-service -> preauth_response_log
+    """
+    try:
+        if fhir_bundle.get("resourceType") != "Bundle":
+            raise HTTPException(
+                status_code=400,
+                detail="resourceType must be 'Bundle'"
+            )
+
+        resolved_correlation_id = correlation_id
+        if not resolved_correlation_id:
+            log_row = db.query(PreAuthRequestLog).filter(
+                PreAuthRequestLog.claim_id == claim_id,
+                PreAuthRequestLog.stage == "FHIR_REQUEST"
+            ).order_by(PreAuthRequestLog.created_at.desc()).first()
+
+            if not log_row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No logged FHIR request found for claim '{claim_id}' to resolve "
+                        f"a correlation_id from - pass ?correlation_id=... explicitly"
+                    )
+                )
+            resolved_correlation_id = log_row.correlation_id
+
+        logger.info(f"📥 Received real PreAuth FHIR ClaimResponse for claim {claim_id} (correlation_id={resolved_correlation_id})")
+        logger.info(f"📦 Incoming FHIR Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "correlation_id": resolved_correlation_id,
+            "fhir_resource": fhir_bundle
+        }
+
+        logger.info(f"📤 Publishing to preauth.fhir.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_fhir_incoming"],
+            claim_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ Real PreAuth FHIR response published to preauth.fhir.incoming: {claim_id}")
+
+        return {
+            "status": "received",
+            "message": "PreAuth FHIR response received, published for JSON conversion and DB/Excel logging",
+            "claim_id": claim_id,
+            "correlation_id": resolved_correlation_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing PreAuth FHIR response: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process PreAuth FHIR response: {str(e)}"
         )
 
 

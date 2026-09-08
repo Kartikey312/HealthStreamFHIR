@@ -1,9 +1,9 @@
 """
 Integration API - FastAPI service
-Entry point for REQUEST-direction traffic only: outbound JSON->FHIR requests
-we send (POST /patient, POST /preauth) and inbound FHIR requests Dhamani
-sends us (POST /fhir/request). Response-direction traffic lives in
-communication-service.
+Naming convention only, not the data direction: endpoint paths here are
+labeled "response" (POST /fhir/response, POST /preauth) while
+communication-service's are labeled "request" (POST /fhir/request, etc.) -
+the underlying request/response logic each endpoint performs is unchanged.
 """
 import logging
 import json
@@ -168,12 +168,17 @@ async def create_patient(
         )
 
 
-@app.post("/fhir/request", tags=["FHIR"])
+@app.post("/fhir/response", tags=["FHIR"])
 async def receive_fhir_request(fhir_bundle: Dict[str, Any]):
     """
     Dummy Dhamani-facing endpoint: receives a CoverageEligibilityRequest FHIR
     Bundle (as Dhamani would send it, on behalf of a provider), converts it to
     flattened JSON, and publishes it for internal processing.
+
+    Path is named "/fhir/response" per this service's naming convention
+    (integration-api endpoints are labeled "response") - the Bundle it
+    receives and the JSON it produces are still eligibility REQUEST data,
+    unchanged from before.
 
     Flow: Dhamani → Integration API → Kafka (json.request.incoming)
     """
