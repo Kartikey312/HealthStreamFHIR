@@ -1,7 +1,7 @@
 """
 SQLAlchemy ORM Models for FHIR database
 """
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Enum, ForeignKey, Index
+from sqlalchemy import Column, Integer, BigInteger, String, Text, DateTime, Boolean, Enum, ForeignKey, Index, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -101,3 +101,41 @@ class WorkflowRunStep(Base):
     error = Column(Text)
     started_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
+
+
+class PreAuthRequestLog(Base):
+    """
+    Audit log for the PreAuth request side (JSON_REQUEST, FHIR_REQUEST stages).
+    Written only by preauth-log-service, a dedicated Kafka consumer - never written
+    inline by integration-api, so a logging failure can't block/break that request.
+
+    payload uses SQLAlchemy's JSON type (native MySQL JSON column, unlike every other
+    table's Text+json.dumps pattern) - assign a dict directly here, do NOT json.dumps()
+    it first, or it will double-encode as a JSON string instead of a JSON object.
+    """
+    __tablename__ = "preauth_request_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    claim_id = Column(String(200), nullable=False, index=True)
+    correlation_id = Column(String(36), nullable=False, index=True)
+    stage = Column(String(20), nullable=False)  # JSON_REQUEST, FHIR_REQUEST
+    payload = Column(JSON, nullable=False)
+    kafka_topic = Column(String(150), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PreAuthResponseLog(Base):
+    """
+    Audit log for the PreAuth response side (FHIR_RESPONSE, JSON_RESPONSE stages).
+    Written only by preauth-log-service. See PreAuthRequestLog for the payload/JSON
+    column caveat - the same applies here.
+    """
+    __tablename__ = "preauth_response_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    claim_id = Column(String(200), nullable=False, index=True)
+    correlation_id = Column(String(36), nullable=False, index=True)
+    stage = Column(String(20), nullable=False)  # FHIR_RESPONSE, JSON_RESPONSE
+    payload = Column(JSON, nullable=False)
+    kafka_topic = Column(String(150), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)

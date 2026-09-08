@@ -133,6 +133,16 @@ export function ConfigPanel() {
     <div className="config-panel">
       <h3>{nodeTypeDef.label}</h3>
       <p className="config-panel-desc">{nodeTypeDef.description}</p>
+      {nodeTypeDef.type === "excel_export" && (
+        <a
+          className="download-button"
+          href={(config.downloadUrl as string) || "http://localhost:8000/preauth/export/excel"}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          ⬇ Download Excel
+        </a>
+      )}
       <div className="config-field">
         <label>Node ID</label>
         <input value={selectedNode.id} disabled />

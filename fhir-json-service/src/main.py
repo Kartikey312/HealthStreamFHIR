@@ -1,6 +1,11 @@
 """
 FHIR to JSON Transformation Service
-Reads from fhir.incoming topic, transforms back to JSON, publishes to json.response
+Reads from fhir.incoming topic, transforms back to JSON, publishes to
+json.response. Also handles the PreAuth response leg: reads from
+preauth.fhir.incoming (the mock ClaimResponse communication-service
+publishes), transforms it, publishes to preauth.json.response - same
+stage-shape as the eligibility branch, just a second topic/converter pair,
+dispatched by message.topic in one consumer.
 """
 import asyncio
 import logging
@@ -15,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 from shared import (
     create_kafka_consumer, create_kafka_producer, send_kafka_message,
     consume_kafka_messages, TOPICS,
-    fhir_to_json_response,
+    fhir_to_json_response, fhir_to_json_claim_response,
     SessionLocal, Transaction, FHIRResponse
 )
 
@@ -27,13 +32,65 @@ consumer = None
 producer = None
 
 
+async def process_preauth_fhir_response(message):
+    """Process a mock PreAuth ClaimResponse and transform back to JSON"""
+    try:
+        key = message.key
+        value = message.value or {}
+
+        claim_id = value.get("claim_id")
+        correlation_id = value.get("correlation_id")
+        fhir_bundle = value.get("fhir_resource")
+
+        logger.info(f"📥 Received PreAuth FHIR response: {key} (correlation_id={correlation_id})")
+
+        if not claim_id or not fhir_bundle:
+            logger.warning(f"⚠️ PreAuth FHIR response message missing fields, skipping: {list(value.keys())}")
+            return
+
+        logger.info(f"📦 Incoming PreAuth FHIR Bundle:\n{json.dumps(value, indent=2, default=str)}")
+
+        json_response = fhir_to_json_claim_response(fhir_bundle, claim_id)
+
+        logger.info(f"📦 Transformed PreAuth JSON response:\n{json.dumps(json_response, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "correlation_id": correlation_id,
+            "payload": json_response
+        }
+
+        logger.info(f"📤 Publishing to preauth.json.response:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_json_response"],
+            claim_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ PreAuth JSON response published to preauth.json.response: {claim_id}")
+
+    except Exception as e:
+        logger.error(f"❌ Error processing PreAuth FHIR response: {e}", exc_info=True)
+
+
+async def route_message(message):
+    """Dispatch to the eligibility or PreAuth handler based on which topic the message arrived on"""
+    if message.topic == TOPICS["preauth_fhir_incoming"]:
+        await process_preauth_fhir_response(message)
+    else:
+        await process_fhir_response(message)
+
+
 async def process_fhir_response(message):
     """Process incoming FHIR response and transform back to JSON"""
     try:
         # Parse message
         key = message.key
         value = message.value
-        
+
         logger.info(f"📥 Received FHIR response: {key}")
         
         transaction_id = value.get("transaction_id")
@@ -113,15 +170,16 @@ async def start_service():
         producer = await create_kafka_producer()
         logger.info("✅ Producer connected")
         
-        # Create consumer
+        # Create consumer - subscribed to both the eligibility and PreAuth
+        # response topics; route_message dispatches by message.topic
         consumer = await create_kafka_consumer(
             "fhir-json-group",
-            [TOPICS["fhir_incoming"]]
+            [TOPICS["fhir_incoming"], TOPICS["preauth_fhir_incoming"]]
         )
-        logger.info("⚙️ Listening for messages on 'fhir.incoming'...")
-        
+        logger.info("⚙️ Listening for messages on 'fhir.incoming' and 'preauth.fhir.incoming'...")
+
         # Consume messages
-        await consume_kafka_messages(consumer, process_fhir_response)
+        await consume_kafka_messages(consumer, route_message)
         
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}", exc_info=True)

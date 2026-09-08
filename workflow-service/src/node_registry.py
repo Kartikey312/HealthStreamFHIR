@@ -48,7 +48,7 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "description": "Call a stored procedure with bound parameters (no free-form SQL)",
         "config_schema": [
             {"key": "procedure", "label": "Procedure name", "type": "string",
-             "placeholder": "usp_get_preauth_claims_details_by_claim_id"},
+             "placeholder": "usp_get_preauth_claim_source_data_by_claim_id"},
             {"key": "params", "label": "Parameters", "type": "keyvalue",
              "placeholder": "value or $input.claim_id", "default": {}}
         ]
@@ -71,7 +71,8 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "description": "Convert a FHIR Bundle into flat JSON (or validate it)",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "fhir_to_json_response", "fhir_to_json_request", "validate_fhir_patient"
+                "fhir_to_json_response", "fhir_to_json_request", "validate_fhir_patient",
+                "fhir_to_json_claim_response"
             ]},
             {"key": "originalPatientIdField", "label": "Original patient id field", "type": "string",
              "default": "patientIdentifier", "showWhen": {"function": "fhir_to_json_response"}}
@@ -83,6 +84,18 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "category": "utility",
         "description": "No-op node - just records input/output at this point in the graph",
         "config_schema": []
+    },
+    {
+        "type": "excel_export",
+        "label": "Excel Export",
+        "category": "utility",
+        "description": "Downloads the PreAuth audit log tables as an Excel workbook. Run only confirms the export endpoint works (a file's bytes can't be handed back as a run step's JSON output) - use the Download button in this node's config panel to actually save the file.",
+        "config_schema": [
+            {"key": "url", "label": "Export URL (Run - Docker-internal)", "type": "string",
+             "default": "http://integration-api:8000/preauth/export/excel"},
+            {"key": "downloadUrl", "label": "Download URL (browser-facing)", "type": "string",
+             "default": "http://localhost:8000/preauth/export/excel"}
+        ]
     }
 ]
 

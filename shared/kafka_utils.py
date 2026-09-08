@@ -87,4 +87,6 @@ TOPICS = {
     "json_request_incoming": "json.request.incoming",    # Dhamani's FHIR request transformed to JSON
     "preauth_json": "preauth.json",                       # PreAuth claim JSON pulled from the SP
     "preauth_fhir_outgoing": "preauth.fhir.outgoing",      # PreAuth JSON transformed to FHIR, for delivery to Dhamani
+    "preauth_fhir_incoming": "preauth.fhir.incoming",      # PreAuth FHIR ClaimResponse (mock) coming back
+    "preauth_json_response": "preauth.json.response",      # PreAuth FHIR ClaimResponse transformed back to JSON
 }

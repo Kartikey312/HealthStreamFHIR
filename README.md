@@ -6,12 +6,14 @@ A complete microservices-based system for converting JSON patient data to FHIR f
 ## Services
 
 ### 1. Integration API (Port 8000)
-- **Purpose**: Entry point for JSON patient data from external systems
+- **Purpose**: REQUEST-direction traffic only - outbound JSON→FHIR requests we send, and inbound FHIR requests Dhamani sends us. Response-direction traffic lives in Communication Service.
 - **Technology**: FastAPI + uvicorn
 - **Database**: MySQL
-- **Kafka Topics**: Publishes to `json.request`
+- **Kafka Topics**: Publishes to `json.request`, `json.request.incoming`, `preauth.json`, `preauth.fhir.outgoing`
 - **Endpoints**:
-  - `POST /patient` - Submit patient data
+  - `POST /patient` - Submit a flattened CoverageEligibilityRequest JSON (outbound: JSON→FHIR)
+  - `POST /fhir/request` - Receive a CoverageEligibilityRequest FHIR Bundle from Dhamani (inbound: FHIR→JSON)
+  - `POST /preauth/{claim_id}` - Fetch a PreAuth claim from the DB stored procedure and convert it to a FHIR Claim Bundle
   - `GET /transaction/{transaction_id}` - Get transaction status
   - `GET /health` - Health check
 
@@ -52,12 +54,13 @@ A complete microservices-based system for converting JSON patient data to FHIR f
   - Audit logging
 
 ### 5. Communication Service (Port 8001)
-- **Purpose**: Receives FHIR responses from hospital/Dhamani systems
+- **Purpose**: RESPONSE-direction traffic only - inbound FHIR responses Dhamani/hospital sends us, and outbound JSON→FHIR responses we send to Dhamani. Request-direction traffic lives in Integration API.
 - **Technology**: FastAPI + uvicorn
 - **Database**: MySQL
-- **Kafka Topics**: Publishes to `fhir.incoming`
+- **Kafka Topics**: Publishes to `fhir.incoming`, `fhir.response.outgoing`
 - **Endpoints**:
-  - `POST /fhir/response` - Receive FHIR response from hospital
+  - `POST /fhir/response` - Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani (inbound: FHIR→JSON)
+  - `POST /response` - Submit our flattened CoverageEligibilityResponse decision JSON (outbound: JSON→FHIR)
   - `GET /health` - Health check
 
 ### 6. Workflow Service (Port 8002)

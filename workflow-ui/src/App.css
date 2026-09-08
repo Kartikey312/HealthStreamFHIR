@@ -161,6 +161,23 @@
   margin: 0 0 14px;
 }
 
+.download-button {
+  display: block;
+  text-align: center;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  margin-bottom: 14px;
+}
+
+.download-button:hover {
+  opacity: 0.9;
+}
+
 .config-field {
   margin-bottom: 12px;
 }

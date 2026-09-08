@@ -1,13 +1,22 @@
 """
 Communication Service - FastAPI
-Receives FHIR responses from Dhamani/Hospital system and publishes to Kafka
+Entry point for RESPONSE-direction traffic only: inbound FHIR responses
+Dhamani/hospital sends us (POST /fhir/response) and outbound JSON->FHIR
+responses we send to Dhamani (POST /response). Request-direction traffic
+lives in integration-api.
+
+Also runs a background Kafka consumer (not HTTP-triggered) for the PreAuth
+flow: consumes the FHIR Claim requests integration-api publishes, runs them
+through a STUB adjudicator (see mock_adjudication.py - no real payer
+connection exists), and publishes the mock ClaimResponse onward.
 """
+import asyncio
 import logging
 import json
 import uuid
-from typing import Dict, Any
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
 import sys
 import os
 
@@ -15,11 +24,14 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
-    HospitalResponse,
-    create_kafka_producer, send_kafka_message, TOPICS,
+    HospitalResponse, EligibilityResponseIn, get_db,
+    create_kafka_producer, create_kafka_consumer, consume_kafka_messages,
+    send_kafka_message, TOPICS,
     Base, engine,
-    fhir_to_json_request
+    json_to_fhir_response
 )
+
+from .mock_adjudication import build_mock_claim_response
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -50,14 +62,78 @@ except Exception as e:
 
 # Global producer
 producer = None
+preauth_consumer = None
+preauth_consumer_task = None
+
+
+async def handle_preauth_fhir_request(message):
+    """
+    Consumes a FHIR Claim request (published by integration-api's
+    /preauth/{claim_id}), runs it through the stub adjudicator, and publishes
+    the mock FHIR ClaimResponse. correlation_id/claim_id are carried forward
+    unchanged from the message consumed here - never regenerated - so
+    preauth-log-service's audit trail can tie this response back to its
+    originating request.
+    """
+    try:
+        value = message.value or {}
+        claim_id = value.get("claim_id")
+        correlation_id = value.get("correlation_id")
+        fhir_bundle = value.get("fhir_resource")
+
+        if not claim_id or not correlation_id or not fhir_bundle:
+            logger.warning(f"⚠️ PreAuth FHIR request message missing fields, skipping: {list(value.keys())}")
+            return
+
+        logger.info(f"📥 Received PreAuth FHIR request for claim {claim_id} (correlation_id={correlation_id})")
+
+        mock_response_bundle = build_mock_claim_response(fhir_bundle, correlation_id)
+
+        logger.info(f"📦 Mock ClaimResponse Bundle:\n{json.dumps(mock_response_bundle, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "correlation_id": correlation_id,
+            "fhir_resource": mock_response_bundle
+        }
+
+        logger.info(f"📤 Publishing to preauth.fhir.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_fhir_incoming"],
+            claim_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ Mock PreAuth FHIR response published to preauth.fhir.incoming: {claim_id}")
+
+    except Exception as e:
+        logger.error(f"❌ Error handling PreAuth FHIR request: {e}", exc_info=True)
+
+
+async def run_preauth_consumer():
+    """Background loop: consumes preauth.fhir.outgoing for the mock adjudicator"""
+    global preauth_consumer
+    try:
+        preauth_consumer = await create_kafka_consumer(
+            "communication-preauth-group",
+            [TOPICS["preauth_fhir_outgoing"]]
+        )
+        logger.info("⚙️ Listening for PreAuth FHIR requests on 'preauth.fhir.outgoing'...")
+        await consume_kafka_messages(preauth_consumer, handle_preauth_fhir_request)
+    except Exception as e:
+        logger.error(f"❌ PreAuth consumer fatal error: {e}", exc_info=True)
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize producer on startup"""
-    global producer
+    """Initialize producer and background PreAuth consumer on startup"""
+    global producer, preauth_consumer_task
     try:
         producer = await create_kafka_producer()
+        preauth_consumer_task = asyncio.create_task(run_preauth_consumer())
         logger.info("🚀 Communication Service started")
     except Exception as e:
         logger.error(f"❌ Failed to start producer: {e}")
@@ -66,8 +142,12 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close producer on shutdown"""
-    global producer
+    """Close producer and background consumer on shutdown"""
+    global producer, preauth_consumer, preauth_consumer_task
+    if preauth_consumer_task:
+        preauth_consumer_task.cancel()
+    if preauth_consumer:
+        await preauth_consumer.stop()
     if producer:
         await producer.stop()
         logger.info("🛑 Communication Service stopped")
@@ -140,66 +220,66 @@ async def receive_fhir_response(response: HospitalResponse):
         )
 
 
-@app.post("/fhir/request", tags=["FHIR"])
-async def receive_fhir_request(fhir_bundle: Dict[str, Any]):
+@app.post("/response", tags=["Eligibility"])
+async def create_response(
+    response_data: EligibilityResponseIn,
+    db: Session = Depends(get_db)
+):
     """
-    Dummy Dhamani-facing endpoint: receives a CoverageEligibilityRequest FHIR
-    Bundle (as Dhamani would send it, on behalf of a provider), converts it to
-    flattened JSON, and publishes it for internal processing.
+    Accept our flattened CoverageEligibilityResponse decision JSON, convert it
+    to a FHIR Bundle, and publish it for delivery to Dhamani.
 
-    Flow: Dhamani → Communication Service → Kafka (json.request.incoming)
+    Flow: JSON Input → FHIR Bundle → Kafka (fhir.response.outgoing)
     """
     try:
-        if fhir_bundle.get("resourceType") != "Bundle":
+        if not response_data.patientIdentifier or not response_data.insurerIdentifier:
             raise HTTPException(
                 status_code=400,
-                detail="resourceType must be 'Bundle'"
+                detail="patientIdentifier and insurerIdentifier are required"
             )
 
-        logger.info(f"📨 Received FHIR request Bundle from Dhamani: {fhir_bundle.get('id')}")
-        logger.info(f"📦 Incoming FHIR Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
-
-        json_request = fhir_to_json_request(fhir_bundle)
+        fhir_bundle = json_to_fhir_response(response_data.dict())
 
         transaction_id = (
-            json_request.get("identifier")
-            or json_request.get("id")
-            or f"REQ-{uuid.uuid4().hex[:12].upper()}"
+            response_data.requestIdentifier
+            or response_data.id
+            or f"TXN-{uuid.uuid4().hex[:12].upper()}"
         )
 
-        logger.info(f"📦 Transformed FHIR request to JSON:\n{json.dumps(json_request, indent=2, default=str)}")
+        logger.info(f"📝 Built FHIR response for transaction: {transaction_id}")
+        logger.info(f"📦 Transformed FHIR Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
 
         kafka_message = {
             "transaction_id": transaction_id,
-            "patient_id": json_request.get("patientIdentifier"),
-            "payload": json_request
+            "patient_id": response_data.patientIdentifier,
+            "fhir_resource": fhir_bundle
         }
 
-        logger.info(f"📤 Publishing to json.request.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
+        logger.info(f"📤 Publishing to fhir.response.outgoing:\n{json.dumps(kafka_message, indent=2, default=str)}")
 
         await send_kafka_message(
             producer,
-            TOPICS["json_request_incoming"],
+            TOPICS["fhir_response_outgoing"],
             transaction_id,
             kafka_message
         )
 
-        logger.info(f"✅ JSON request published to json.request.incoming: {transaction_id}")
+        logger.info(f"✅ Eligibility response for patient {response_data.patientIdentifier} published to Kafka")
 
         return {
-            "status": "received",
-            "message": "FHIR request received, converted to JSON, and published",
+            "status": "ACCEPTED",
+            "message": "Eligibility response converted to FHIR and published to Kafka",
             "transaction_id": transaction_id,
-            "json_request": json_request
+            "fhir_bundle": fhir_bundle
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error processing FHIR request: {e}", exc_info=True)
+        logger.error(f"❌ Error processing eligibility response: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process FHIR request: {str(e)}"
+            detail=f"Failed to process eligibility response: {str(e)}"
         )
 
 

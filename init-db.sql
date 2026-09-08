@@ -312,21 +312,26 @@ CREATE TABLE IF NOT EXISTS claim_request_encounter (
 ) ENGINE=InnoDB;
 
 -- =====================================================================================
--- usp_get_preauth_claims_details_by_claim_id
+-- usp_get_preauth_claim_source_data_by_claim_id
 -- MySQL port of dbo.USP_Get_PreAuthClaimsDetails_ByClaimId, @AsJson = 1 mode only.
 -- Resolves claim id -> identifier -> eligibility_response_identifier, then returns one
 -- JSON object with the same 11 array keys the SQL Server SP produces.
+--
+-- Renamed from usp_get_preauth_claims_details_by_claim_id (that name is now the
+-- request/response audit-log trail procedure below) - this procedure's own body and
+-- behavior are unchanged, only the name moved. POST /preauth/{claim_id} in
+-- integration-api is the only caller.
 --
 -- NOT ported: the Tosfa (NlgicMedical_OMAN_New) member/policy enrichment - a separate
 -- external system with its own unknown schema. Claims come back without the
 -- Fromdate/Policyno/MemberNo/etc. fields the original SP fills in when
 -- @IncludeTosfa = 1; this mirrors @IncludeTosfa = 0 behavior.
 -- =====================================================================================
-DROP PROCEDURE IF EXISTS usp_get_preauth_claims_details_by_claim_id;
+DROP PROCEDURE IF EXISTS usp_get_preauth_claim_source_data_by_claim_id;
 
 DELIMITER $$
 
-CREATE PROCEDURE usp_get_preauth_claims_details_by_claim_id(
+CREATE PROCEDURE usp_get_preauth_claim_source_data_by_claim_id(
   IN p_claim_id VARCHAR(200)
 )
 BEGIN
@@ -563,6 +568,78 @@ BEGIN
       WHERE c2.id = v_resolved_id
     )
   ) AS PreAuthJSON;
+END$$
+
+DELIMITER ;
+
+-- =====================================================================================
+-- PreAuth request/response audit log
+--
+-- payload uses MySQL's native JSON column type - a DELIBERATE, CONTAINED EXCEPTION.
+-- Every other table in this file stores JSON as LONGTEXT + application-level
+-- json.dumps/json.loads; only these two tables use native JSON, so the log stays
+-- queryable (JSON_EXTRACT etc.) per the audit-logging spec's explicit requirement.
+-- Do not follow this pattern elsewhere without a similar reason.
+--
+-- Written exclusively by preauth-log-service, a dedicated Kafka consumer subscribed
+-- to all 4 PreAuth topics (preauth.json, preauth.fhir.outgoing, preauth.fhir.incoming,
+-- preauth.json.response) - no producing step writes a log row inline, so a logging
+-- failure can never block or break the request/response flow it's observing.
+-- =====================================================================================
+
+CREATE TABLE IF NOT EXISTS preauth_request_log (
+  id              BIGINT PRIMARY KEY AUTO_INCREMENT,
+  claim_id        VARCHAR(200) NOT NULL,
+  correlation_id  VARCHAR(36)  NOT NULL,
+  stage           ENUM('JSON_REQUEST', 'FHIR_REQUEST') NOT NULL,
+  payload         JSON NOT NULL,
+  kafka_topic     VARCHAR(150) NULL,
+  created_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  INDEX idx_preauth_request_log_claim_id (claim_id),
+  INDEX idx_preauth_request_log_correlation_id (correlation_id),
+  INDEX idx_preauth_request_log_claim_created (claim_id, created_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS preauth_response_log (
+  id              BIGINT PRIMARY KEY AUTO_INCREMENT,
+  claim_id        VARCHAR(200) NOT NULL,
+  correlation_id  VARCHAR(36)  NOT NULL,
+  stage           ENUM('FHIR_RESPONSE', 'JSON_RESPONSE') NOT NULL,
+  payload         JSON NOT NULL,
+  kafka_topic     VARCHAR(150) NULL,
+  created_at      TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  INDEX idx_preauth_response_log_claim_id (claim_id),
+  INDEX idx_preauth_response_log_correlation_id (correlation_id),
+  INDEX idx_preauth_response_log_claim_created (claim_id, created_at)
+) ENGINE=InnoDB;
+
+-- =====================================================================================
+-- usp_get_preauth_claims_details_by_claim_id
+-- Returns the full PreAuth request+response audit trail for one claim, ordered by
+-- when each stage happened. This name previously belonged to the raw-claim-source-data
+-- procedure above - that logic now lives under
+-- usp_get_preauth_claim_source_data_by_claim_id instead.
+-- =====================================================================================
+DROP PROCEDURE IF EXISTS usp_get_preauth_claims_details_by_claim_id;
+
+DELIMITER $$
+
+CREATE PROCEDURE usp_get_preauth_claims_details_by_claim_id(
+  IN p_claim_id VARCHAR(200)
+)
+BEGIN
+  SELECT * FROM (
+    SELECT id, claim_id, correlation_id, stage, 'REQUEST' AS log_table, payload, created_at
+    FROM preauth_request_log
+    WHERE claim_id = p_claim_id
+
+    UNION ALL
+
+    SELECT id, claim_id, correlation_id, stage, 'RESPONSE' AS log_table, payload, created_at
+    FROM preauth_response_log
+    WHERE claim_id = p_claim_id
+  ) AS trail
+  ORDER BY created_at, id;
 END$$
 
 DELIMITER ;

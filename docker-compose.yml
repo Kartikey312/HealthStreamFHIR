@@ -149,6 +149,25 @@ services:
       - ./shared:/shared
     command: python src/main.py
 
+  # PreAuth Log Service
+  preauth-log-service:
+    build:
+      context: .
+      dockerfile: ./preauth-log-service/Dockerfile
+    container_name: preauth-log-service
+    environment:
+      DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./preauth-log-service:/app
+      - ./shared:/shared
+    command: python src/main.py
+
   # Communication Service - FastAPI
   communication-service:
     build:

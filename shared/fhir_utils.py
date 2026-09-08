@@ -1084,6 +1084,108 @@ def json_to_fhir_claim(preauth_json: Dict[str, Any]) -> Dict[str, Any]:
         raise
 
 
+def fhir_to_json_claim_response(fhir_bundle: Dict[str, Any], original_claim_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Transform a FHIR ClaimResponse message Bundle back into flattened JSON.
+
+    BEST-EFFORT MAPPING - not verified against a real Dhamani ClaimResponse
+    example (there is none yet). Today the only producer of a Bundle this
+    function will ever see is communication-service's mock_adjudication.py
+    stub (there's no real payer/adjudicator connected), so this mirrors
+    whatever shape that stub emits rather than a confirmed real one. Mirrors
+    fhir_to_json_response's flattening conventions for the CoverageEligibility
+    domain, including the optional original-id fallback pattern.
+
+    Args:
+        fhir_bundle: FHIR message Bundle carrying a ClaimResponse resource
+        original_claim_id: Fallback used only if the ClaimResponse's own
+            patient reference can't be resolved
+
+    Returns:
+        Flattened JSON claim response
+    """
+    try:
+        message_header = _find_resource(fhir_bundle, "MessageHeader")
+        claim_response = _find_resource(fhir_bundle, "ClaimResponse")
+        errors = claim_response.get("error", []) or []
+
+        def _ref_id(resource: Dict[str, Any], field: str) -> Optional[str]:
+            ref = (resource.get(field) or {}).get("reference")
+            return ref.split("/")[-1] if ref else None
+
+        is_mock = any(
+            ext.get("url", "").endswith("extension-mock-response") and ext.get("valueBoolean") is True
+            for ext in claim_response.get("extension", []) or []
+        )
+
+        item = [
+            {
+                "sequence": entry.get("sequence"),
+                "productOrService": _first(entry.get("productOrService", {}).get("coding")).get("code"),
+                "adjudication": [
+                    {
+                        "category": _first(adj.get("category", {}).get("coding")).get("code"),
+                        "amount": adj.get("amount", {}).get("value")
+                    }
+                    for adj in entry.get("adjudication", []) or []
+                ]
+            }
+            for entry in claim_response.get("item", []) or []
+        ]
+
+        outcome = claim_response.get("outcome")
+
+        json_response = {
+            "id": claim_response.get("id") or original_claim_id,
+            "resourceType": claim_response.get("resourceType"),
+            "status": claim_response.get("status"),
+            "type": _first(claim_response.get("type", {}).get("coding")).get("code"),
+            "use": claim_response.get("use"),
+            "patientIdentifier": _ref_id(claim_response, "patient") or original_claim_id,
+            "insurerIdentifier": _ref_id(claim_response, "insurer"),
+            "providerIdentifier": _ref_id(claim_response, "requestor"),
+            "requestIdentifier": _ref_id(claim_response, "request"),
+            "created": _format_datetime(claim_response.get("created")),
+            "outcome": outcome,
+            "disposition": claim_response.get("disposition"),
+            "preAuthRef": claim_response.get("preAuthRef"),
+            "isMockResponse": is_mock,
+            "item": item,
+            "total": [
+                {
+                    "category": _first(t.get("category", {}).get("coding")).get("code"),
+                    "amount": t.get("amount", {}).get("value")
+                }
+                for t in claim_response.get("total", []) or []
+            ],
+            "error": [
+                {
+                    "errorExtensionExpression": _first(error.get("code", {}).get("coding")).get("display"),
+                    "errorCode": _first(error.get("code", {}).get("coding")).get("code")
+                }
+                for error in errors
+            ],
+            "messageHeader": {
+                "id": message_header.get("id"),
+                "eventCoding": message_header.get("eventCoding", {}).get("code"),
+                "senderIdentifier": message_header.get("sender", {}).get("identifier", {}).get("value"),
+                "destinationReceiverIdentifier": message_header.get("destination", [{}])[0].get("receiver", {}).get("identifier", {}).get("value"),
+                "focus": _first(message_header.get("focus")).get("reference"),
+                "responseIdentifier": message_header.get("response", {}).get("identifier"),
+                "responseCode": message_header.get("response", {}).get("code")
+            },
+            "sync_status": "SUCCESS" if outcome == "complete" and not errors else "FAILED",
+            "completed_at": datetime.utcnow().isoformat()
+        }
+
+        logger.info(f"✅ Transformed FHIR ClaimResponse to JSON: {json_response.get('id')}")
+        return json_response
+
+    except Exception as e:
+        logger.error(f"❌ Error transforming FHIR ClaimResponse to JSON: {e}")
+        raise
+
+
 def validate_fhir_patient(fhir_bundle: Dict[str, Any]) -> tuple[bool, Optional[list]]:
     """
     Validate a Dhamani eligibility request Bundle

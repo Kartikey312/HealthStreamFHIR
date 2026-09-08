@@ -5,7 +5,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../'))
 from shared import (
     json_to_fhir_patient, fhir_to_json_response, validate_fhir_patient,
-    fhir_to_json_request, json_to_fhir_response, json_to_fhir_claim
+    fhir_to_json_request, json_to_fhir_response, json_to_fhir_claim,
+    fhir_to_json_claim_response
 )
 
 from .context import ExecutionContext
@@ -19,6 +20,7 @@ FUNCTION_REGISTRY = {
     "fhir_to_json_request": fhir_to_json_request,
     "json_to_fhir_response": json_to_fhir_response,
     "json_to_fhir_claim": json_to_fhir_claim,
+    "fhir_to_json_claim_response": fhir_to_json_claim_response,
 }
 
 

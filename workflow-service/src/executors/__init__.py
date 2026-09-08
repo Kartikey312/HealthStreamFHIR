@@ -1,5 +1,5 @@
 from .context import ExecutionContext
-from . import manual_trigger, http_request, kafka_publish, db_query, fhir_transform, view
+from . import manual_trigger, http_request, kafka_publish, db_query, fhir_transform, view, excel_export
 
 NODE_EXECUTORS = {
     "manual_trigger": manual_trigger.execute,
@@ -12,6 +12,7 @@ NODE_EXECUTORS = {
     # fhir_to_json above), kept so previously-saved workflows still execute.
     "fhir_transform": fhir_transform.execute,
     "view": view.execute,
+    "excel_export": excel_export.execute,
 }
 
 __all__ = ["NODE_EXECUTORS", "ExecutionContext"]

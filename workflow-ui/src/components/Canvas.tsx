@@ -23,6 +23,7 @@ const nodeTypesMap = {
   // Legacy key - no longer in the palette, kept so previously-saved workflows still render.
   fhir_transform: WorkflowNode,
   view: WorkflowNode,
+  excel_export: WorkflowNode,
 };
 
 let nodeIdCounter = 1;
