@@ -57,10 +57,11 @@ A complete microservices-based system for converting JSON patient data to FHIR f
 - **Purpose**: RESPONSE-direction traffic only - inbound FHIR responses Dhamani/hospital sends us, and outbound JSON→FHIR responses we send to Dhamani. Request-direction traffic lives in Integration API.
 - **Technology**: FastAPI + uvicorn
 - **Database**: MySQL
-- **Kafka Topics**: Publishes to `fhir.incoming`, `fhir.response.outgoing`
+- **Kafka Topics**: Publishes to `fhir.incoming`, `fhir.response.outgoing`, `preauth.fhir.incoming`
 - **Endpoints**:
   - `POST /fhir/response` - Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani (inbound: FHIR→JSON)
   - `POST /response` - Submit our flattened CoverageEligibilityResponse decision JSON (outbound: JSON→FHIR)
+  - `POST /preauth/{claim_id}/respond` - Manually generate and publish the mock PreAuth ClaimResponse for a claim that already has a FHIR request logged (optional `?correlation_id=` to target a specific invocation, defaults to the most recent). Nothing generates a PreAuth response automatically - this is the only trigger.
   - `GET /health` - Health check
 
 ### 6. Workflow Service (Port 8002)

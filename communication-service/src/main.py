@@ -5,15 +5,18 @@ Dhamani/hospital sends us (POST /fhir/response) and outbound JSON->FHIR
 responses we send to Dhamani (POST /response). Request-direction traffic
 lives in integration-api.
 
-Also runs a background Kafka consumer (not HTTP-triggered) for the PreAuth
-flow: consumes the FHIR Claim requests integration-api publishes, runs them
-through a STUB adjudicator (see mock_adjudication.py - no real payer
-connection exists), and publishes the mock ClaimResponse onward.
+PreAuth: no response is ever generated automatically. A FHIR Claim request
+published by integration-api's /preauth/{claim_id} just sits there - still
+picked up and logged by preauth-log-service independently, same as before -
+until POST /preauth/{claim_id}/respond is explicitly called to generate and
+publish the mock ClaimResponse. (An earlier version of this service ran a
+background Kafka consumer that did this automatically the instant a request
+was published; that's been removed on purpose.)
 """
-import asyncio
 import logging
 import json
 import uuid
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -25,10 +28,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
     HospitalResponse, EligibilityResponseIn, get_db,
-    create_kafka_producer, create_kafka_consumer, consume_kafka_messages,
-    send_kafka_message, TOPICS,
+    create_kafka_producer, send_kafka_message, TOPICS,
     Base, engine,
-    json_to_fhir_response
+    json_to_fhir_response,
+    PreAuthRequestLog
 )
 
 from .mock_adjudication import build_mock_claim_response
@@ -62,78 +65,14 @@ except Exception as e:
 
 # Global producer
 producer = None
-preauth_consumer = None
-preauth_consumer_task = None
-
-
-async def handle_preauth_fhir_request(message):
-    """
-    Consumes a FHIR Claim request (published by integration-api's
-    /preauth/{claim_id}), runs it through the stub adjudicator, and publishes
-    the mock FHIR ClaimResponse. correlation_id/claim_id are carried forward
-    unchanged from the message consumed here - never regenerated - so
-    preauth-log-service's audit trail can tie this response back to its
-    originating request.
-    """
-    try:
-        value = message.value or {}
-        claim_id = value.get("claim_id")
-        correlation_id = value.get("correlation_id")
-        fhir_bundle = value.get("fhir_resource")
-
-        if not claim_id or not correlation_id or not fhir_bundle:
-            logger.warning(f"⚠️ PreAuth FHIR request message missing fields, skipping: {list(value.keys())}")
-            return
-
-        logger.info(f"📥 Received PreAuth FHIR request for claim {claim_id} (correlation_id={correlation_id})")
-
-        mock_response_bundle = build_mock_claim_response(fhir_bundle, correlation_id)
-
-        logger.info(f"📦 Mock ClaimResponse Bundle:\n{json.dumps(mock_response_bundle, indent=2, default=str)}")
-
-        kafka_message = {
-            "transaction_id": claim_id,
-            "claim_id": claim_id,
-            "correlation_id": correlation_id,
-            "fhir_resource": mock_response_bundle
-        }
-
-        logger.info(f"📤 Publishing to preauth.fhir.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
-
-        await send_kafka_message(
-            producer,
-            TOPICS["preauth_fhir_incoming"],
-            claim_id,
-            kafka_message
-        )
-
-        logger.info(f"✅ Mock PreAuth FHIR response published to preauth.fhir.incoming: {claim_id}")
-
-    except Exception as e:
-        logger.error(f"❌ Error handling PreAuth FHIR request: {e}", exc_info=True)
-
-
-async def run_preauth_consumer():
-    """Background loop: consumes preauth.fhir.outgoing for the mock adjudicator"""
-    global preauth_consumer
-    try:
-        preauth_consumer = await create_kafka_consumer(
-            "communication-preauth-group",
-            [TOPICS["preauth_fhir_outgoing"]]
-        )
-        logger.info("⚙️ Listening for PreAuth FHIR requests on 'preauth.fhir.outgoing'...")
-        await consume_kafka_messages(preauth_consumer, handle_preauth_fhir_request)
-    except Exception as e:
-        logger.error(f"❌ PreAuth consumer fatal error: {e}", exc_info=True)
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize producer and background PreAuth consumer on startup"""
-    global producer, preauth_consumer_task
+    """Initialize producer on startup"""
+    global producer
     try:
         producer = await create_kafka_producer()
-        preauth_consumer_task = asyncio.create_task(run_preauth_consumer())
         logger.info("🚀 Communication Service started")
     except Exception as e:
         logger.error(f"❌ Failed to start producer: {e}")
@@ -142,12 +81,8 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Close producer and background consumer on shutdown"""
-    global producer, preauth_consumer, preauth_consumer_task
-    if preauth_consumer_task:
-        preauth_consumer_task.cancel()
-    if preauth_consumer:
-        await preauth_consumer.stop()
+    """Close producer on shutdown"""
+    global producer
     if producer:
         await producer.stop()
         logger.info("🛑 Communication Service stopped")
@@ -280,6 +215,86 @@ async def create_response(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process eligibility response: {str(e)}"
+        )
+
+
+@app.post("/preauth/{claim_id}/respond", tags=["PreAuth"])
+async def respond_to_preauth_claim(
+    claim_id: str,
+    correlation_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually generate and publish the mock PreAuth ClaimResponse for a claim
+    that already has a FHIR request logged. This is the ONLY thing that
+    produces a PreAuth response - nothing does this automatically anymore.
+
+    Reads the FHIR request straight from preauth_request_log (written
+    independently by preauth-log-service, which keeps logging every request
+    whether or not this endpoint is ever called) rather than needing to hold
+    or re-fetch anything itself. If correlation_id isn't given, uses the
+    most recently logged FHIR_REQUEST for this claim_id.
+
+    Flow: preauth_request_log -> mock adjudicator -> Kafka (preauth.fhir.incoming)
+    """
+    try:
+        query = db.query(PreAuthRequestLog).filter(
+            PreAuthRequestLog.claim_id == claim_id,
+            PreAuthRequestLog.stage == "FHIR_REQUEST"
+        )
+        if correlation_id:
+            query = query.filter(PreAuthRequestLog.correlation_id == correlation_id)
+
+        log_row = query.order_by(PreAuthRequestLog.created_at.desc()).first()
+
+        if not log_row:
+            detail = f"No logged FHIR request found for claim '{claim_id}'"
+            if correlation_id:
+                detail += f" and correlation_id '{correlation_id}'"
+            raise HTTPException(status_code=404, detail=detail)
+
+        fhir_bundle = log_row.payload
+        resolved_correlation_id = log_row.correlation_id
+
+        logger.info(f"📥 Manually responding to claim {claim_id} (correlation_id={resolved_correlation_id})")
+
+        mock_response_bundle = build_mock_claim_response(fhir_bundle, resolved_correlation_id)
+
+        logger.info(f"📦 Mock ClaimResponse Bundle:\n{json.dumps(mock_response_bundle, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "correlation_id": resolved_correlation_id,
+            "fhir_resource": mock_response_bundle
+        }
+
+        logger.info(f"📤 Publishing to preauth.fhir.incoming:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_fhir_incoming"],
+            claim_id,
+            kafka_message
+        )
+
+        logger.info(f"✅ Mock PreAuth FHIR response published to preauth.fhir.incoming: {claim_id}")
+
+        return {
+            "status": "ACCEPTED",
+            "message": "Mock PreAuth response generated and published to Kafka",
+            "claim_id": claim_id,
+            "correlation_id": resolved_correlation_id,
+            "fhir_bundle": mock_response_bundle
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error responding to preauth claim: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to respond to preauth claim: {str(e)}"
         )
 
 
