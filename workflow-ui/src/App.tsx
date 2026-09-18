@@ -148,6 +148,14 @@ function App() {
         <button onClick={handleRun} disabled={nodes.length === 0 || runWorkflow.isPending}>
           ▶ Run
         </button>
+        <a
+          className="topbar-link"
+          href="http://localhost:8000/preauth/export/excel"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          ⬇ Download Excel History
+        </a>
       </header>
 
       <div className="app-body">

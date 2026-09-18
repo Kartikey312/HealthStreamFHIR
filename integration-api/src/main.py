@@ -9,14 +9,14 @@ import logging
 import json
 import uuid
 from io import BytesIO
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment
 import sys
 import os
 
@@ -383,6 +383,89 @@ async def get_preauth_audit_trail(
         )
 
 
+def _resolve_current_chain_entries(db: Session, claim_id: str, correlation_id: Optional[str] = None):
+    """
+    Fetches the full PreAuth trail for claim_id and narrows it to one chain
+    execution (one correlation_id) - the most recently logged one if
+    correlation_id isn't given. Returns (resolved_correlation_id, chain_entries).
+    Raises HTTPException(404) if nothing matches.
+    """
+    result = db.execute(
+        text("CALL usp_get_preauth_claims_details_by_claim_id(:claim_id)"),
+        {"claim_id": claim_id}
+    )
+    rows = result.fetchall()
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"No PreAuth log entries found for claim '{claim_id}'")
+
+    all_entries = [
+        {
+            "id": row.id,
+            "claim_id": row.claim_id,
+            "correlation_id": row.correlation_id,
+            "stage": row.stage,
+            "log_table": row.log_table,
+            "payload": row.payload if isinstance(row.payload, dict) else json.loads(row.payload),
+            "created_at": row.created_at
+        }
+        for row in rows
+    ]
+
+    # SP orders by created_at, id ascending - the last entry is the most recent one.
+    resolved_correlation_id = correlation_id or all_entries[-1]["correlation_id"]
+
+    chain_entries = [e for e in all_entries if e["correlation_id"] == resolved_correlation_id]
+
+    if not chain_entries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No PreAuth log entries found for claim '{claim_id}' and correlation_id '{resolved_correlation_id}'"
+        )
+
+    return resolved_correlation_id, chain_entries
+
+
+@app.get("/preauth/{claim_id}/current-trail", tags=["PreAuth"])
+async def get_preauth_current_chain_trail(
+    claim_id: str,
+    correlation_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Read-only: like /audit-trail but scoped to a single PreAuth chain
+    execution instead of every chain ever run for this claim_id - the
+    JSON_REQUEST/FHIR_REQUEST/FHIR_RESPONSE/JSON_RESPONSE stages that share
+    one correlation_id. If correlation_id isn't given, resolves to the
+    correlation_id of the most recently logged stage for this claim_id.
+
+    Flow: usp_get_preauth_claims_details_by_claim_id -> filter to one correlation_id
+    """
+    try:
+        resolved_correlation_id, chain_entries = _resolve_current_chain_entries(db, claim_id, correlation_id)
+        by_stage = {e["stage"]: e for e in chain_entries}
+
+        return {
+            "claim_id": claim_id,
+            "correlation_id": resolved_correlation_id,
+            "count": len(chain_entries),
+            "json_request": by_stage.get("JSON_REQUEST"),
+            "fhir_request": by_stage.get("FHIR_REQUEST"),
+            "fhir_response": by_stage.get("FHIR_RESPONSE"),
+            "json_response": by_stage.get("JSON_RESPONSE"),
+            "trail": chain_entries
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error fetching current PreAuth chain trail: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch current chain trail: {str(e)}"
+        )
+
+
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 SECTION_FONT = Font(bold=True, size=13)
@@ -488,10 +571,171 @@ async def export_preauth_log_workbook(db: Session = Depends(get_db)):
         )
 
     except Exception as e:
-        logger.error(f"❌ Error generating PreAuth log workbook: {e}", exc_info=True)
+        logger.error(f"❌ Error exporting preauth log workbook: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to generate workbook: {str(e)}"
+            detail=f"Failed to export preauth log workbook: {str(e)}"
+        )
+
+
+CHAIN_STAGES_ALL = ["JSON_REQUEST", "FHIR_REQUEST", "FHIR_RESPONSE", "JSON_RESPONSE"]
+CHAIN_STAGES_REQUEST = ["JSON_REQUEST", "FHIR_REQUEST"]
+CHAIN_STAGES_RESPONSE = ["FHIR_RESPONSE", "JSON_RESPONSE"]
+
+
+def _write_current_chain_sheet(
+    wb, claim_id: str, correlation_id: str, chain_entries: list,
+    sheet_title: str = "Current Chain", stage_order: list = CHAIN_STAGES_ALL
+):
+    ws = wb.create_sheet(title=sheet_title)
+
+    ws.cell(row=1, column=1, value=f"Current chain execution for claim: {claim_id}").font = SECTION_FONT
+    ws.cell(row=2, column=1, value=f"correlation_id: {correlation_id}")
+
+    headers = ["Stage", "Log Table", "Created At", "Payload"]
+    header_row = 4
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col_idx, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+
+    by_stage = {e["stage"]: e for e in chain_entries}
+
+    r = header_row + 1
+    for stage in stage_order:
+        entry = by_stage.get(stage)
+        ws.cell(row=r, column=1, value=stage)
+        if entry:
+            ws.cell(row=r, column=2, value=entry["log_table"])
+            ws.cell(row=r, column=3, value=str(entry["created_at"]))
+            payload_cell = ws.cell(row=r, column=4, value=json.dumps(entry["payload"], indent=2, default=str))
+            payload_cell.alignment = Alignment(wrap_text=True, vertical="top")
+        else:
+            ws.cell(row=r, column=2, value="(not yet recorded for this chain)")
+        r += 1
+
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 26
+    ws.column_dimensions["D"].width = 100
+
+
+@app.get("/preauth/{claim_id}/current-trail/export/excel", tags=["PreAuth"])
+async def export_preauth_current_chain_excel(
+    claim_id: str,
+    correlation_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Downloads an Excel workbook for a single PreAuth chain execution (same
+    scoping as /current-trail) instead of the full-history dump
+    /preauth/export/excel produces - one sheet with the
+    JSON_REQUEST/FHIR_REQUEST/FHIR_RESPONSE/JSON_RESPONSE payloads for just
+    that one correlation_id (the most recent one if not given explicitly).
+    """
+    try:
+        resolved_correlation_id, chain_entries = _resolve_current_chain_entries(db, claim_id, correlation_id)
+
+        wb = Workbook()
+        wb.remove(wb.active)
+        _write_current_chain_sheet(wb, claim_id, resolved_correlation_id, chain_entries)
+
+        buffer = BytesIO()
+        wb.save(buffer)
+        buffer.seek(0)
+
+        return StreamingResponse(
+            buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=preauth_{claim_id}_current_chain.xlsx"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error exporting current PreAuth chain excel: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export current chain excel: {str(e)}"
+        )
+
+
+def _export_current_chain_segment_excel(
+    db: Session, claim_id: str, correlation_id: Optional[str],
+    log_table: str, stage_order: list, sheet_title: str, filename_suffix: str
+):
+    resolved_correlation_id, chain_entries = _resolve_current_chain_entries(db, claim_id, correlation_id)
+    segment_entries = [e for e in chain_entries if e["log_table"] == log_table]
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    _write_current_chain_sheet(
+        wb, claim_id, resolved_correlation_id, segment_entries,
+        sheet_title=sheet_title, stage_order=stage_order
+    )
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=preauth_{claim_id}_current_chain_{filename_suffix}.xlsx"}
+    )
+
+
+@app.get("/preauth/{claim_id}/current-trail/request/export/excel", tags=["PreAuth"])
+async def export_preauth_current_chain_request_excel(
+    claim_id: str,
+    correlation_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Like /current-trail/export/excel but request-direction (JSON→FHIR) only
+    - just the JSON_REQUEST/FHIR_REQUEST stages for the current chain, no
+    response data. Meant for the JSON → FHIR node's Download button.
+    """
+    try:
+        return _export_current_chain_segment_excel(
+            db, claim_id, correlation_id,
+            log_table="REQUEST", stage_order=CHAIN_STAGES_REQUEST,
+            sheet_title="Current Chain (Request)", filename_suffix="request"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error exporting current PreAuth chain request excel: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export current chain request excel: {str(e)}"
+        )
+
+
+@app.get("/preauth/{claim_id}/current-trail/response/export/excel", tags=["PreAuth"])
+async def export_preauth_current_chain_response_excel(
+    claim_id: str,
+    correlation_id: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Like /current-trail/export/excel but response-direction (FHIR→JSON) only
+    - just the FHIR_RESPONSE/JSON_RESPONSE stages for the current chain, no
+    request data. Meant for the FHIR → JSON node's Download button.
+    """
+    try:
+        return _export_current_chain_segment_excel(
+            db, claim_id, correlation_id,
+            log_table="RESPONSE", stage_order=CHAIN_STAGES_RESPONSE,
+            sheet_title="Current Chain (Response)", filename_suffix="response"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error exporting current PreAuth chain response excel: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export current chain response excel: {str(e)}"
         )
 
 

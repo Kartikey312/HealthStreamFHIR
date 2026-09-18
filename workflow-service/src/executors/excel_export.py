@@ -1,32 +1,15 @@
 from typing import Dict, Any
-import httpx
 from .context import ExecutionContext
-from .templating import resolve
 
 
 async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
     """
-    Confirms an Excel export endpoint is reachable and generating a file.
-    Does NOT return the file's binary content as the node's output - run
-    step outputs are stored as JSON, and stuffing spreadsheet bytes in there
-    would bloat/break that. The actual download happens from the browser via
-    the Download button in this node's config panel (ConfigPanel.tsx), which
-    just links straight to the same URL - a real download is a browser
-    action, not something a Kafka-driven backend node can hand back as data.
+    No-op pass-through, same as the View node - its entire value is that the
+    WorkflowRunStep row records input/output at this point in the graph. The
+    Download button in this node's config panel then reads the PRECEDING
+    node's step from this same run (via GET /runs/{run_id}/nodes/{node_id}/
+    export/excel in main.py) to build the Excel file - not this node's own
+    input/output, which would just be a duplicate of the upstream node's
+    output on both sides.
     """
-    url = resolve(config.get("url"), input_data)
-    if not url:
-        raise ValueError("excel_export node requires a url")
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(url)
-
-    if response.status_code != 200:
-        raise ValueError(f"Export endpoint returned {response.status_code}: {response.text[:200]}")
-
-    return {
-        "status": "ready",
-        "url": url,
-        "content_type": response.headers.get("content-type"),
-        "size_bytes": len(response.content)
-    }
+    return input_data

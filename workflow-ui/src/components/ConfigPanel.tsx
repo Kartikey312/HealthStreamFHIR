@@ -106,6 +106,8 @@ function KeyValueField({
 export function ConfigPanel() {
   const selectedNodeId = useWorkflowStore((s) => s.selectedNodeId);
   const nodes = useWorkflowStore((s) => s.nodes);
+  const edges = useWorkflowStore((s) => s.edges);
+  const activeRunId = useWorkflowStore((s) => s.activeRunId);
   const updateNodeConfig = useWorkflowStore((s) => s.updateNodeConfig);
   const { data: nodeTypesData } = useNodeTypes();
   const { data: topicsData } = useTopics();
@@ -129,19 +131,63 @@ export function ConfigPanel() {
       Object.entries(field.showWhen).every(([k, v]) => config[k] === v)
   );
 
+  // Claim-based Excel export (json_to_fhir / fhir_to_json nodes): looks up
+  // the PreAuth audit log by Claim ID for the most recent chain execution -
+  // request-only for JSON→FHIR, response-only for FHIR→JSON.
+  let claimExcelExportPath: string | null = null;
+  let claimExcelExportLabel = "";
+  if (nodeTypeDef.type === "json_to_fhir" && config.function === "json_to_fhir_claim") {
+    claimExcelExportPath = "current-trail/request/export/excel";
+    claimExcelExportLabel = "Download Request Chain Excel (by Claim ID)";
+  } else if (nodeTypeDef.type === "fhir_to_json" && config.function === "fhir_to_json_claim_response") {
+    claimExcelExportPath = "current-trail/response/export/excel";
+    claimExcelExportLabel = "Download Response Chain Excel (by Claim ID)";
+  }
+
+  // Excel Export node: no ID, no DB lookup - just reads the PRECEDING
+  // node's own input/output for the last Run from workflow_run_steps.
+  const isExcelExportNode = nodeTypeDef.type === "excel_export";
+  const hasUpstreamNode = edges.some((e) => e.target === selectedNode.id);
+
   return (
     <div className="config-panel">
       <h3>{nodeTypeDef.label}</h3>
       <p className="config-panel-desc">{nodeTypeDef.description}</p>
-      {nodeTypeDef.type === "excel_export" && (
-        <a
-          className="download-button"
-          href={(config.downloadUrl as string) || "http://localhost:8000/preauth/export/excel"}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          ⬇ Download Excel
-        </a>
+      {claimExcelExportPath && (
+        (config.claimId as string) ? (
+          <a
+            className="download-button"
+            href={`http://localhost:8000/preauth/${encodeURIComponent(config.claimId as string)}/${claimExcelExportPath}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ⬇ {claimExcelExportLabel}
+          </a>
+        ) : (
+          <div className="download-button download-button-disabled">
+            Enter a Claim ID below to download
+          </div>
+        )
+      )}
+      {isExcelExportNode && (
+        !hasUpstreamNode ? (
+          <div className="download-button download-button-disabled">
+            Wire this after a JSON → FHIR or FHIR → JSON node first
+          </div>
+        ) : !activeRunId ? (
+          <div className="download-button download-button-disabled">
+            Run the workflow, then download here
+          </div>
+        ) : (
+          <a
+            className="download-button"
+            href={`http://localhost:8002/runs/${activeRunId}/nodes/${encodeURIComponent(selectedNode.id)}/export/excel`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ⬇ Download This Chain's Excel
+          </a>
+        )
       )}
       <div className="config-field">
         <label>Node ID</label>

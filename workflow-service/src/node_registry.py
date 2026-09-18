@@ -61,7 +61,10 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
                 "json_to_fhir_patient", "json_to_fhir_response", "json_to_fhir_claim"
-            ]}
+            ]},
+            {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",
+             "placeholder": "e.g. c_demo_1 or $input.claim_id",
+             "showWhen": {"function": "json_to_fhir_claim"}}
         ]
     },
     {
@@ -75,7 +78,10 @@ NODE_TYPES: List[Dict[str, Any]] = [
                 "fhir_to_json_claim_response"
             ]},
             {"key": "originalPatientIdField", "label": "Original patient id field", "type": "string",
-             "default": "patientIdentifier", "showWhen": {"function": "fhir_to_json_response"}}
+             "default": "patientIdentifier", "showWhen": {"function": "fhir_to_json_response"}},
+            {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",
+             "placeholder": "e.g. c_demo_1 or $input.claim_id",
+             "showWhen": {"function": "fhir_to_json_claim_response"}}
         ]
     },
     {
@@ -89,13 +95,8 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "type": "excel_export",
         "label": "Excel Export",
         "category": "utility",
-        "description": "Downloads the PreAuth audit log tables as an Excel workbook. Run only confirms the export endpoint works (a file's bytes can't be handed back as a run step's JSON output) - use the Download button in this node's config panel to actually save the file.",
-        "config_schema": [
-            {"key": "url", "label": "Export URL (Run - Docker-internal)", "type": "string",
-             "default": "http://integration-api:8000/preauth/export/excel"},
-            {"key": "downloadUrl", "label": "Download URL (browser-facing)", "type": "string",
-             "default": "http://localhost:8000/preauth/export/excel"}
-        ]
+        "description": "No-op pass-through, like View - but after a Run, its Download button exports whatever actually flowed through the node right before it in THIS run: that upstream node's own input and output (e.g. wired right after a JSON -> FHIR node, it downloads the JSON that came in and the FHIR that came out; after FHIR -> JSON, vice versa). No claim ID or DB lookup needed - it reads straight from this run's own recorded step data.",
+        "config_schema": []
     }
 ]
 
