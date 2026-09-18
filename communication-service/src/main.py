@@ -1,22 +1,22 @@
 """
 Communication Service - FastAPI
-Naming convention only, not the data direction: endpoint paths here are
-labeled "request" (POST /fhir/request, POST /request, POST
-/preauth/{claim_id}/request, POST /preauth/{claim_id}/fhir-request) while
-integration-api's are labeled "response" - the underlying request/response
-logic each endpoint performs is unchanged. This service still functionally
-handles inbound FHIR responses and outbound JSON->FHIR responses, same as
-before.
+Naming convention: endpoint paths here are labeled "request" (POST
+/fhir/request, POST /request, POST /preauth/{claim_id}/request) while
+integration-api's are labeled "response" - for most of these the path label
+and the actual data direction are decoupled on purpose (this service still
+functionally handles inbound eligibility FHIR responses and outbound JSON->FHIR
+responses, same as before).
 
-PreAuth: no response is ever generated automatically. A FHIR Claim request
-published by integration-api's /preauth/{claim_id} just sits there - still
-picked up and logged by preauth-log-service independently, same as before -
-until either POST /preauth/{claim_id}/request (generates and publishes a MOCK
-ClaimResponse) or POST /preauth/{claim_id}/fhir-request (accepts a REAL
-ClaimResponse Bundle from Dhamani) is explicitly called. (An earlier version
-of this service ran a background Kafka consumer that generated a mock
-response automatically the instant a request was published; that's been
-removed on purpose.)
+PreAuth is the exception: it now hosts BOTH sides of the PreAuth exchange,
+each named for what it actually carries -
+  - POST /preauth/{claim_id}/fhir-request       - accepts a REAL Claim request Bundle from Dhamani
+  - POST /preauth/{claim_id}/request             - generates a MOCK ClaimResponse
+  - POST /preauth/{claim_id}/fhir-request-result - accepts a REAL ClaimResponse Bundle from Dhamani
+No PreAuth response is ever generated automatically - nothing calls the mock
+generator or expects a real response until one of the last two is explicitly
+called. (An earlier version of this service ran a background Kafka consumer
+that generated a mock response automatically the instant a request was
+published; that's been removed on purpose.)
 """
 import logging
 import json
@@ -35,7 +35,7 @@ from shared import (
     HospitalResponse, EligibilityResponseIn, get_db,
     create_kafka_producer, send_kafka_message, TOPICS,
     Base, engine,
-    json_to_fhir_response,
+    json_to_fhir_response, fhir_to_json_claim,
     PreAuthRequestLog
 )
 
@@ -316,7 +316,7 @@ async def respond_to_preauth_claim(
         )
 
 
-@app.post("/preauth/{claim_id}/fhir-request", tags=["PreAuth"])
+@app.post("/preauth/{claim_id}/fhir-request-result", tags=["PreAuth"])
 async def receive_preauth_fhir_response(
     claim_id: str,
     fhir_bundle: Dict[str, Any],
@@ -326,11 +326,9 @@ async def receive_preauth_fhir_response(
     """
     Receive a REAL PreAuth ClaimResponse FHIR Bundle from Dhamani (as opposed
     to /preauth/{claim_id}/request, which generates a MOCK one internally).
-
-    Path is named "/preauth/{claim_id}/fhir-request" per this service's
-    naming convention (communication-service endpoints are labeled
-    "request") - it still receives and processes a real ClaimResponse
-    RESPONSE bundle, unchanged from before.
+    Named "fhir-request-result" (carries the adjudication result/decision) to
+    stay distinct from /preauth/{claim_id}/fhir-request, which accepts the
+    Claim itself.
 
     If correlation_id isn't given as a query param, it's resolved from the
     most recently logged FHIR_REQUEST for this claim_id, so the response can
@@ -406,6 +404,99 @@ async def receive_preauth_fhir_response(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to process PreAuth FHIR response: {str(e)}"
+        )
+
+
+@app.post("/preauth/{claim_id}/fhir-request", tags=["PreAuth"])
+async def receive_preauth_fhir_claim_request(
+    claim_id: str,
+    fhir_bundle: Dict[str, Any]
+):
+    """
+    Receive a REAL PreAuth Claim FHIR Bundle from Dhamani - a genuine
+    priorauth-request, as opposed to POST /preauth/{claim_id} on
+    integration-api, which builds its own outgoing Claim from our DB.
+
+    Lives here (not integration-api) and is named "fhir-request" because it
+    accepts a real Claim REQUEST - the path name and the resource direction
+    agree for this one. Named distinctly from
+    /preauth/{claim_id}/fhir-request-result, which accepts the ClaimResponse
+    decision instead.
+
+    Converts it to flattened JSON (fhir_to_json_claim) and publishes both
+    stages to the same topics POST /preauth/{claim_id} on integration-api
+    already uses (preauth.json, preauth.fhir.outgoing), so preauth-log-service
+    logs it identically as JSON_REQUEST/FHIR_REQUEST in preauth_request_log -
+    no new topic or routing needed. A fresh correlation_id is generated here,
+    so it can be paired with a later POST /preauth/{claim_id}/request (or
+    /fhir-request-result) response.
+
+    Flow: Dhamani -> Communication Service -> Kafka (preauth.json, preauth.fhir.outgoing)
+    """
+    try:
+        if fhir_bundle.get("resourceType") != "Bundle":
+            raise HTTPException(
+                status_code=400,
+                detail="resourceType must be 'Bundle'"
+            )
+
+        correlation_id = str(uuid.uuid4())
+
+        json_claim = fhir_to_json_claim(fhir_bundle)
+
+        logger.info(f"📥 Received real PreAuth FHIR Claim request for claim {claim_id} (correlation_id={correlation_id})")
+        logger.info(f"📦 Incoming FHIR Bundle:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
+        logger.info(f"📦 Transformed PreAuth FHIR request to JSON:\n{json.dumps(json_claim, indent=2, default=str)}")
+
+        kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "correlation_id": correlation_id,
+            "payload": json_claim
+        }
+
+        logger.info(f"📤 Publishing to preauth.json:\n{json.dumps(kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_json"],
+            claim_id,
+            kafka_message
+        )
+
+        fhir_kafka_message = {
+            "transaction_id": claim_id,
+            "claim_id": claim_id,
+            "correlation_id": correlation_id,
+            "fhir_resource": fhir_bundle
+        }
+
+        logger.info(f"📤 Publishing to preauth.fhir.outgoing:\n{json.dumps(fhir_kafka_message, indent=2, default=str)}")
+
+        await send_kafka_message(
+            producer,
+            TOPICS["preauth_fhir_outgoing"],
+            claim_id,
+            fhir_kafka_message
+        )
+
+        logger.info(f"✅ Real PreAuth FHIR Claim request published and logged: {claim_id}")
+
+        return {
+            "status": "received",
+            "message": "PreAuth FHIR Claim request received, converted to JSON, and published for logging",
+            "claim_id": claim_id,
+            "correlation_id": correlation_id,
+            "json_claim": json_claim
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing PreAuth FHIR Claim request: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process PreAuth FHIR Claim request: {str(e)}"
         )
 
 

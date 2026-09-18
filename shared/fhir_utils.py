@@ -735,6 +735,131 @@ def fhir_to_json_response(fhir_bundle: Dict[str, Any], original_patient_id: str)
         raise
 
 
+def _extension_entry(resource: Dict[str, Any], url_keyword: str) -> Dict[str, Any]:
+    """Return the raw extension dict whose url contains url_keyword (for valueReference/valueMoney/etc extensions, unlike _extension_code which only reads valueCodeableConcept)"""
+    for extension in resource.get("extension", []) or []:
+        if url_keyword in extension.get("url", ""):
+            return extension
+    return {}
+
+
+def fhir_to_json_claim(fhir_bundle: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform an incoming Dhamani PreAuth Claim FHIR Bundle (a real
+    priorauth-request sent to us by Dhamani on behalf of a provider) into a
+    flattened JSON PreAuth request - the FHIR->JSON mirror of
+    json_to_fhir_claim, following the same flattening style as
+    fhir_to_json_request (the CoverageEligibilityRequest equivalent).
+
+    BEST-EFFORT MAPPING - not verified against a full set of real Dhamani
+    Claim examples (checked against one real bundle only). item[] extension
+    fields (package/tax/patientShare) follow the same
+    extension-package/extension-tax/extension-patient-share convention
+    json_to_fhir_claim writes; diagnosis/careTeam/supportingInfo are passed
+    through close to their raw FHIR shape rather than fully flattened, since
+    unlike CoverageEligibility there's no existing verified flat schema for
+    them to match.
+
+    Args:
+        fhir_bundle: FHIR message Bundle received from Dhamani
+
+    Returns:
+        Flattened JSON PreAuth request
+    """
+    try:
+        message_header = _find_resource(fhir_bundle, "MessageHeader")
+        claim = _find_resource(fhir_bundle, "Claim")
+        patient = _find_resource(fhir_bundle, "Patient")
+        provider_org = _find_organization_by_type(fhir_bundle, "prov")
+        insurer_org = _find_organization_by_type(fhir_bundle, "ins")
+
+        patient_identifier = _first(patient.get("identifier"))
+        claim_identifier = _first(claim.get("identifier"))
+
+        provider_identifier = (
+            _first(provider_org.get("identifier")).get("value")
+            or message_header.get("sender", {}).get("identifier", {}).get("value")
+        )
+        insurer_identifier = (
+            _first(insurer_org.get("identifier")).get("value")
+            or claim.get("insurer", {}).get("reference", "").split("/")[-1]
+            or message_header.get("destination", [{}])[0].get("receiver", {}).get("identifier", {}).get("value")
+        )
+
+        encounter_ext = _extension_entry(claim, "extension-encounter")
+        eligibility_response_ext = _extension_entry(claim, "extension-eligibility-response")
+        prescriber_ext = _extension_entry(claim, "extension-prescriber")
+
+        item = []
+        for it in claim.get("item", []) or []:
+            product = _first(it.get("productOrService", {}).get("coding"))
+            entry = {
+                "sequence": it.get("sequence"),
+                "careTeamSequence": it.get("careTeamSequence"),
+                "productOrServiceSystem": product.get("system"),
+                "productOrServiceCode": product.get("code"),
+                "productOrServiceDisplay": product.get("display"),
+                "servicedDate": it.get("servicedDate"),
+                "quantity": it.get("quantity", {}).get("value"),
+                "unitPrice": it.get("unitPrice", {}).get("value"),
+                "net": it.get("net", {}).get("value"),
+                "netCurrency": it.get("net", {}).get("currency"),
+                "package": _extension_entry(it, "extension-package").get("valueBoolean"),
+                "tax": _extension_entry(it, "extension-tax").get("valueMoney", {}).get("value"),
+                "patientShare": _extension_entry(it, "extension-patient-share").get("valueMoney", {}).get("value"),
+            }
+            item.append({k: v for k, v in entry.items() if v is not None})
+
+        json_claim = {
+            "id": claim.get("id"),
+            "resourceType": claim.get("resourceType"),
+            "identifier": claim_identifier.get("value"),
+            "identifierSystem": claim_identifier.get("system"),
+            "status": claim.get("status"),
+            "type": _first(claim.get("type", {}).get("coding")).get("code"),
+            "subType": _first(claim.get("subType", {}).get("coding")).get("code"),
+            "use": claim.get("use"),
+            "priority": _first(claim.get("priority", {}).get("coding")).get("code"),
+            "patientIdentifier": patient_identifier.get("value"),
+            "patientIdentifierType": _first(patient_identifier.get("type", {}).get("coding")).get("code"),
+            "patientIdentifierSystem": patient_identifier.get("system"),
+            "patientName": _first(patient.get("name")).get("text"),
+            "patientGender": patient.get("gender"),
+            "patientBirthDate": patient.get("birthDate"),
+            "created": _format_datetime(claim.get("created")),
+            "insurerIdentifier": insurer_identifier,
+            "insurerName": insurer_org.get("name") or message_header.get("destination", [{}])[0].get("receiver", {}).get("display"),
+            "providerIdentifier": provider_identifier,
+            "providerName": provider_org.get("name") or message_header.get("sender", {}).get("display"),
+            "encounterReference": encounter_ext.get("valueReference", {}).get("reference"),
+            "eligibilityResponseIdentifier": eligibility_response_ext.get("valueReference", {}).get("identifier", {}).get("value"),
+            "prescriberIdentifier": prescriber_ext.get("valueReference", {}).get("identifier", {}).get("value"),
+            "prescriberName": prescriber_ext.get("valueReference", {}).get("display"),
+            "payeeType": _first(claim.get("payee", {}).get("type", {}).get("coding")).get("code"),
+            "careTeam": claim.get("careTeam", []),
+            "supportingInfo": claim.get("supportingInfo", []),
+            "diagnosis": claim.get("diagnosis", []),
+            "insurance": claim.get("insurance", []),
+            "item": item,
+            "total": claim.get("total", {}).get("value"),
+            "totalCurrency": claim.get("total", {}).get("currency"),
+            "messageHeader": {
+                "id": message_header.get("id"),
+                "eventCoding": message_header.get("eventCoding", {}).get("code"),
+                "destinationReceiverIdentifier": message_header.get("destination", [{}])[0].get("receiver", {}).get("identifier", {}).get("value"),
+                "senderIdentifier": message_header.get("sender", {}).get("identifier", {}).get("value"),
+                "focus": _first(message_header.get("focus")).get("reference")
+            }
+        }
+
+        logger.info(f"✅ Transformed FHIR PreAuth Claim request to JSON: {json_claim.get('identifier') or json_claim.get('id')}")
+        return json_claim
+
+    except Exception as e:
+        logger.error(f"❌ Error transforming FHIR Claim request to JSON: {e}")
+        raise
+
+
 def json_to_fhir_claim(preauth_json: Dict[str, Any]) -> Dict[str, Any]:
     """
     Transform a PreAuth claim JSON payload (as returned by

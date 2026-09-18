@@ -23,7 +23,7 @@ from .kafka_utils import (
 from .fhir_utils import (
     json_to_fhir_patient, fhir_to_json_response, validate_fhir_patient,
     fhir_to_json_request, json_to_fhir_response, json_to_fhir_claim,
-    fhir_to_json_claim_response
+    fhir_to_json_claim_response, fhir_to_json_claim
 )
 
 __all__ = [
@@ -37,5 +37,5 @@ __all__ = [
     "consume_kafka_messages", "TOPICS",
     "json_to_fhir_patient", "fhir_to_json_response", "validate_fhir_patient",
     "fhir_to_json_request", "json_to_fhir_response", "json_to_fhir_claim",
-    "fhir_to_json_claim_response"
+    "fhir_to_json_claim_response", "fhir_to_json_claim"
 ]
