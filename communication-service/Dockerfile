@@ -20,6 +20,4 @@ COPY shared ../shared
 # Set PYTHONPATH to include shared module
 ENV PYTHONPATH=/app:/:$PYTHONPATH
 
-EXPOSE 8001
-
-CMD ["python", "-m", "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["python", "-m", "src.main"]

@@ -168,26 +168,34 @@ services:
       - ./shared:/shared
     command: python src/main.py
 
-  # Communication Service - FastAPI
+  # HAPI FHIR - local stand-in for the external FHIR server (implementation.md section 8)
+  fhir-server:
+    image: hapiproject/hapi:latest
+    container_name: fhir-server
+    ports:
+      - "8090:8080"
+
+  # FHIR Communication Service ("fhir-comm") - pure Kafka worker, not HTTP
   communication-service:
     build:
       context: .
       dockerfile: ./communication-service/Dockerfile
     container_name: communication-service
-    ports:
-      - "8001:8001"
     environment:
       DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      FHIR_SERVER_URL: http://fhir-server:8080/fhir
     depends_on:
       mysql:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      fhir-server:
+        condition: service_started
     volumes:
       - ./communication-service:/app
       - ./shared:/shared
-    command: python -m uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload
+    command: python -m src.main
 
   # Workflow Service - FastAPI
   workflow-service:

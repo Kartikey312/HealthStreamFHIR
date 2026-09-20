@@ -139,3 +139,52 @@ class PreAuthResponseLog(Base):
     payload = Column(JSON, nullable=False)
     kafka_topic = Column(String(150), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AuditLog(Base):
+    """
+    Generic audit trail per implementation.md section 5 - every request and
+    state change across the rebuilt pipeline (integration-api,
+    json-fhir-service, communication-service, fhir-json-service,
+    processing-service), one row per Envelope a service handles.
+    """
+    __tablename__ = "audit_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+    correlation_id = Column(String(36), nullable=False, index=True)
+    service = Column(String(100), nullable=False)
+    action = Column(String(100), nullable=False)
+    client_id = Column(String(255), nullable=True)
+    payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class MessageTracking(Base):
+    """
+    Message lifecycle tracking per implementation.md section 5 - one row per
+    correlation_id, updated as it moves through the pipeline. Backs
+    GET /api/v1/patients/status/{correlation_id} on integration-api.
+    """
+    __tablename__ = "message_tracking"
+
+    correlation_id = Column(String(36), primary_key=True)
+    patient_id = Column(String(255), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="RECEIVED", index=True)
+    # RECEIVED|TRANSFORMED|SENT|RESPONDED|COMPLETED|FAILED
+    fhir_resource_id = Column(String(255), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProcessedMessage(Base):
+    """
+    Idempotency for consumers per implementation.md section 5 - dedupe by
+    message_id per service, checked before handling so redelivered messages
+    (at-least-once delivery + manual commit) are harmless.
+    """
+    __tablename__ = "processed_messages"
+
+    service = Column(String(100), primary_key=True)
+    message_id = Column(String(36), primary_key=True)
+    processed_at = Column(DateTime, default=datetime.utcnow)

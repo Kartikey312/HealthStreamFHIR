@@ -1,5 +1,41 @@
 -- Initialize FHIR Database
 
+-- Rebuilt pipeline tables (implementation.md section 5 - MySQL syntax,
+-- Postgres types translated: BIGSERIAL->BIGINT AUTO_INCREMENT, UUID->VARCHAR(36),
+-- TIMESTAMPTZ->TIMESTAMP, JSONB->JSON)
+CREATE TABLE IF NOT EXISTS audit_log (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT,
+  correlation_id VARCHAR(36) NOT NULL,
+  service VARCHAR(100) NOT NULL,
+  action VARCHAR(100) NOT NULL,
+  client_id VARCHAR(255),
+  payload JSON,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_audit_log_correlation_id (correlation_id)
+);
+
+CREATE TABLE IF NOT EXISTS message_tracking (
+  correlation_id VARCHAR(36) PRIMARY KEY,
+  patient_id VARCHAR(255) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'RECEIVED',  -- RECEIVED|TRANSFORMED|SENT|RESPONDED|COMPLETED|FAILED
+  fhir_resource_id VARCHAR(255),
+  last_error TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_message_tracking_patient_id (patient_id),
+  INDEX idx_message_tracking_status (status)
+);
+
+CREATE TABLE IF NOT EXISTS processed_messages (
+  service VARCHAR(100) NOT NULL,
+  message_id VARCHAR(36) NOT NULL,
+  processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (service, message_id)
+);
+
+-- Legacy tables below - kept for services not part of this rebuild
+-- (preauth-log-service, workflow-service) so they don't break on startup.
+
 -- Create transactions table
 CREATE TABLE IF NOT EXISTS transactions (
   id INT PRIMARY KEY AUTO_INCREMENT,

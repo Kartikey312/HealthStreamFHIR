@@ -1,25 +1,22 @@
 """
-JSON to FHIR Transformation Service
-Reads from json.request topic, transforms to FHIR, publishes to fhir.outgoing
+JSON to FHIR Transformer ("json-to-fhir" per implementation.md section 6.3)
+Reads an Envelope from json.request, maps JSON -> FHIR Patient, publishes an
+Envelope to fhir.outgoing.
 """
 import asyncio
 import logging
 import json
 import sys
 import os
-from sqlalchemy.orm import Session
 
-# Add shared module to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
     create_kafka_consumer, create_kafka_producer, send_kafka_message,
-    consume_kafka_messages, TOPICS,
-    json_to_fhir_patient, validate_fhir_patient,
-    SessionLocal, Transaction, FHIRRequest
+    consume_kafka_messages, TOPICS, Envelope, to_fhir_patient,
+    SessionLocal, MessageTracking, AuditLog
 )
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -27,112 +24,74 @@ consumer = None
 producer = None
 
 
-async def process_json_message(message):
-    """Process incoming JSON message and transform to FHIR"""
+async def process_json_request(message):
+    """Transform one json.request Envelope into FHIR and publish to fhir.outgoing"""
     try:
-        # Parse message
-        key = message.key
-        value = message.value
-        
-        logger.info(f"📥 Received JSON message: {key}")
-        
-        transaction_id = value.get("transaction_id")
-        patient_id = value.get("patient_id")
-        patient_name = value.get("patient_name")
-        patient_data = value.get("payload", {})
+        env = Envelope.model_validate(message.value)
 
-        logger.info(f"📦 Incoming JSON payload:\n{json.dumps(value, indent=2, default=str)}")
+        logger.info(f"📥 [json-to-fhir] Received: {env.correlation_id}")
+        logger.info(f"📦 Payload:\n{json.dumps(env.payload, indent=2, default=str)}")
 
-        # Get database session
         db = SessionLocal()
-        
+        tracking = None
         try:
-            # Update transaction status
-            transaction = db.query(Transaction).filter(
-                Transaction.transaction_id == transaction_id
+            tracking = db.query(MessageTracking).filter(
+                MessageTracking.correlation_id == env.correlation_id
             ).first()
-            
-            if transaction:
-                transaction.status = "PROCESSING"
-                db.commit()
-            
-            # Transform JSON to FHIR eligibility Bundle
-            logger.info(f"🔄 Transforming eligibility request for {patient_id} to FHIR...")
-            fhir_bundle = json_to_fhir_patient(patient_data)
 
-            # Validate FHIR
-            is_valid, errors = validate_fhir_patient(fhir_bundle)
+            fhir_patient = to_fhir_patient(env.payload)  # raises on bad input -> logged, message still committed
 
-            if not is_valid:
-                logger.error(f"❌ FHIR validation failed: {errors}")
-                if transaction:
-                    transaction.status = "FAILED"
-                    db.commit()
-                return
-
-            logger.info(f"✅ FHIR eligibility Bundle validated: {fhir_bundle['id']}")
-            logger.info(f"📦 Transformed FHIR resource:\n{json.dumps(fhir_bundle, indent=2, default=str)}")
-
-            # Store in database
-            fhir_request = FHIRRequest(
-                transaction_id=transaction_id,
-                request_id=fhir_bundle["id"],
-                fhir_resource_type="Bundle",
-                fhir_payload=json.dumps(fhir_bundle),
-                validation_status="VALID"
-            )
-            db.add(fhir_request)
-
-            if transaction:
-                transaction.fhir_payload = json.dumps(fhir_bundle)
-
+            db.add(AuditLog(
+                correlation_id=env.correlation_id, service="json-to-fhir",
+                action="patient.fhir.outgoing.built", payload=fhir_patient
+            ))
+            if tracking:
+                tracking.status = "TRANSFORMED"
+                tracking.fhir_resource_id = fhir_patient.get("id")
             db.commit()
 
-            # Publish to next topic
-            kafka_message = {
-                "transaction_id": transaction_id,
-                "patient_id": patient_id,
-                "patient_name": patient_name,
-                "fhir_resource": fhir_bundle
-            }
-            
-            logger.info(f"📤 Publishing to fhir.outgoing:\n{json.dumps(kafka_message, indent=2, default=str)}")
+            logger.info(f"✅ Transformed to FHIR Patient: {fhir_patient['id']}")
 
-            await send_kafka_message(
-                producer,
-                TOPICS["fhir_outgoing"],
-                transaction_id,
-                kafka_message
+            out = Envelope(
+                correlation_id=env.correlation_id, source="json-to-fhir",
+                event_type="patient.fhir.outgoing", payload=fhir_patient,
             )
 
-            logger.info(f"📤 Published FHIR to fhir.outgoing: {transaction_id}")
-            
+            await send_kafka_message(
+                producer, TOPICS["fhir_outgoing"], str(env.payload["patientId"]),
+                out.model_dump(mode="json")
+            )
+
+            if tracking:
+                tracking.status = "SENT"
+                db.commit()
+
+            logger.info(f"📤 Published to fhir.outgoing: {env.correlation_id}")
+
+        except Exception as e:
+            if tracking:
+                tracking.status = "FAILED"
+                tracking.last_error = str(e)
+                db.commit()
+            raise
         finally:
             db.close()
-    
+
     except Exception as e:
-        logger.error(f"❌ Error processing JSON message: {e}", exc_info=True)
+        logger.error(f"❌ [json-to-fhir] Error processing message: {e}", exc_info=True)
 
 
 async def start_service():
-    """Start JSON-FHIR service"""
     global consumer, producer
-    
     try:
-        # Create producer
         producer = await create_kafka_producer()
         logger.info("✅ Producer connected")
-        
-        # Create consumer
-        consumer = await create_kafka_consumer(
-            "json-fhir-group",
-            [TOPICS["json_request"]]
-        )
+
+        consumer = await create_kafka_consumer("json-to-fhir-group", [TOPICS["json_request"]])
         logger.info("⚙️ Listening for messages on 'json.request'...")
-        
-        # Consume messages
-        await consume_kafka_messages(consumer, process_json_message)
-        
+
+        await consume_kafka_messages(consumer, process_json_request)
+
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}", exc_info=True)
         raise
@@ -144,5 +103,5 @@ async def start_service():
 
 
 if __name__ == "__main__":
-    logger.info("🚀 JSON-FHIR Service starting...")
+    logger.info("🚀 JSON-to-FHIR Service starting...")
     asyncio.run(start_service())

@@ -14,9 +14,11 @@ KAFKA_BROKER = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:29092")
 
 
 async def create_kafka_producer():
-    """Create and connect Kafka producer"""
+    """Create and connect Kafka producer - acks=all + idempotence per implementation.md 6.1"""
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BROKER,
+        acks="all",
+        enable_idempotence=True,
         value_serializer=lambda v: json.dumps(v).encode('utf-8') if v else b'',
         key_serializer=lambda k: str(k).encode('utf-8') if k else b''
     )
@@ -26,7 +28,12 @@ async def create_kafka_producer():
 
 
 async def create_kafka_consumer(group_id: str, topics: list):
-    """Create and connect Kafka consumer"""
+    """
+    Create and connect Kafka consumer. enable_auto_commit=False per
+    implementation.md 6.1 - the caller (consume_kafka_messages) commits
+    manually after each message is handled (at-least-once, not
+    fire-and-forget auto-commit that can silently lose a message on crash).
+    """
     consumer = AIOKafkaConsumer(
         *topics,
         bootstrap_servers=KAFKA_BROKER,
@@ -34,7 +41,7 @@ async def create_kafka_consumer(group_id: str, topics: list):
         value_deserializer=lambda m: json.loads(m.decode('utf-8')) if m else None,
         key_deserializer=lambda k: k.decode('utf-8') if k else None,
         auto_offset_reset='earliest',
-        enable_auto_commit=True,
+        enable_auto_commit=False,
         session_timeout_ms=30000
     )
     await consumer.start()
@@ -58,8 +65,17 @@ async def consume_kafka_messages(
     timeout: Optional[int] = None
 ):
     """
-    Consume messages from Kafka and process them
-    
+    Consume messages from Kafka and process them, committing the offset
+    after each message is handled (enable_auto_commit=False on every
+    consumer now - see create_kafka_consumer) rather than relying on
+    Kafka's periodic auto-commit, which can silently mark a message
+    "done" before the handler actually finishes it.
+
+    Commits even when the handler raises, matching implementation.md's
+    BaseWorker (6.1): retry/DLQ is the handler's own job by re-publishing
+    the message itself, not by leaving the offset uncommitted for a
+    redelivery loop.
+
     Args:
         consumer: Kafka consumer instance
         message_handler: Async function to handle each message
@@ -71,6 +87,8 @@ async def consume_kafka_messages(
                 await message_handler(message)
             except Exception as e:
                 logger.error(f"❌ Error processing message: {e}", exc_info=True)
+            finally:
+                await consumer.commit()
     except Exception as e:
         logger.error(f"❌ Consumer error: {e}", exc_info=True)
     finally:
