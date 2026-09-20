@@ -23,7 +23,10 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "config_schema": [
             {"key": "method", "label": "Method", "type": "select",
              "options": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"},
-            {"key": "url", "label": "URL", "type": "string"},
+            {"key": "url", "label": "URL", "type": "string",
+             "placeholder": "http://host/path - or .../$input.body.correlation_id"},
+            {"key": "delaySeconds", "label": "Wait before calling (seconds)", "type": "string",
+             "placeholder": "0 - set ~3 for a GET that reads an async result", "default": "0"},
             {"key": "headers", "label": "Headers", "type": "keyvalue", "default": {}},
             {"key": "bodyMode", "label": "Body", "type": "select",
              "options": ["passthrough", "custom"], "default": "passthrough"},
@@ -60,7 +63,7 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "description": "Convert flat JSON into a FHIR Bundle - always the request direction: something we're sending out to Dhamani, never a response we're constructing",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "json_to_fhir_patient", "json_to_fhir_claim"
+                "to_fhir_eligibility_bundle", "json_to_fhir_claim"
             ]},
             {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",
              "placeholder": "e.g. c_demo_1 or $input.claim_id",
@@ -74,11 +77,9 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "description": "Convert a FHIR Bundle into flat JSON (or validate it) - always the response direction: a request/claim/preauth response coming back from Dhamani, never an inbound request",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "fhir_to_json_response", "validate_fhir_patient",
+                "to_eligibility_response_json", "validate_fhir_patient",
                 "fhir_to_json_claim_response"
             ]},
-            {"key": "originalPatientIdField", "label": "Original patient id field", "type": "string",
-             "default": "patientIdentifier", "showWhen": {"function": "fhir_to_json_response"}},
             {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",
              "placeholder": "e.g. c_demo_1 or $input.claim_id",
              "showWhen": {"function": "fhir_to_json_claim_response"}}

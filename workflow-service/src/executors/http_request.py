@@ -1,7 +1,8 @@
+import asyncio
 from typing import Dict, Any
 import httpx
 from .context import ExecutionContext
-from .templating import resolve_dict
+from .templating import resolve_dict, resolve_url
 
 
 async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: ExecutionContext) -> Dict[str, Any]:
@@ -9,6 +10,14 @@ async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: Execu
     url = config.get("url")
     if not url:
         raise ValueError("http_request node requires a url")
+
+    url = resolve_url(url, input_data)
+
+    # The eligibility endpoints answer 202 and finish over Kafka, so a follow-up
+    # GET needs a moment for the worker - capped so a typo can't hang a run.
+    delay = float(config.get("delaySeconds") or 0)
+    if delay > 0:
+        await asyncio.sleep(min(delay, 30))
 
     headers = resolve_dict(config.get("headers"), input_data)
     body_mode = config.get("bodyMode", "passthrough")

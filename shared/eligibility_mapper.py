@@ -58,6 +58,10 @@ def to_fhir_eligibility_bundle(src: Dict[str, Any]) -> Dict[str, Any]:
     provider_url = f"{base}/Organization/{provider_org_id}"
     insurer_url = f"{base}/Organization/{insurer_org_id}"
 
+    purpose = src.get("purpose") or ["discovery"]
+    if isinstance(purpose, str):  # the API's schema normalizes this; a raw workflow seed may not
+        purpose = [purpose]
+
     priority = src.get("priority") or "normal"
     priority_coding = {"system": "http://terminology.hl7.org/CodeSystem/processpriority", "code": priority}
     if priority in PRIORITY_DISPLAY:
@@ -97,7 +101,7 @@ def to_fhir_eligibility_bundle(src: Dict[str, Any]) -> Dict[str, Any]:
         }],
         "status": src.get("status") or "active",
         "priority": {"coding": [priority_coding]},
-        "purpose": src.get("purpose") or ["discovery"],
+        "purpose": purpose,
         "patient": {"reference": patient_url},
         "servicedDate": src.get("servicedDate"),
         "created": _fhir_datetime(src.get("created")),

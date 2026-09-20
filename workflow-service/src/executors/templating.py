@@ -31,3 +31,15 @@ def resolve_dict(d: Optional[Dict[str, Any]], input_data: Dict[str, Any]) -> Dic
     if not d:
         return {}
     return {k: resolve(v, input_data) for k, v in d.items()}
+
+
+def resolve_url(url: str, input_data: Dict[str, Any]) -> str:
+    """
+    Resolve "$input..." path segments inside a URL, e.g.
+    ".../requests/$input.body.correlation_id" -> ".../requests/<the id>".
+    Only whole "/"-separated segments are substituted; the rest is literal.
+    """
+    return "/".join(
+        str(resolve(part, input_data)) if part.strip().startswith("$input") else part
+        for part in url.split("/")
+    )
