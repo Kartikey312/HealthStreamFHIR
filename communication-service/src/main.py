@@ -1,17 +1,20 @@
 """
 Communication Service - FastAPI
-Naming convention: endpoint paths here are labeled "request" (POST
-/fhir/request, POST /request, POST /preauth/{claim_id}/request) while
-integration-api's are labeled "response" - for most of these the path label
-and the actual data direction are decoupled on purpose (this service still
-functionally handles inbound eligibility FHIR responses and outbound JSON->FHIR
-responses, same as before).
+This service is the side of the integration Dhamani/hospital calls into: it
+accepts inbound FHIR (and JSON) payloads from them and publishes/returns
+responses, so every endpoint path here is labeled "response" (POST
+/fhir/response, POST /response, POST /preauth/{claim_id}/response, POST
+/preauth/{claim_id}/fhir-response, POST /preauth/{claim_id}/fhir-response-result)
+- opposite of integration-api, whose paths are labeled "response" for outbound
+request-direction traffic. Some of these path labels are decoupled from the
+literal payload direction on purpose (e.g. /preauth/{claim_id}/fhir-response
+receives an inbound Claim REQUEST Bundle, not a response) - see each
+endpoint's own docstring for what it actually carries.
 
-PreAuth is the exception: it now hosts BOTH sides of the PreAuth exchange,
-each named for what it actually carries -
-  - POST /preauth/{claim_id}/fhir-request       - accepts a REAL Claim request Bundle from Dhamani
-  - POST /preauth/{claim_id}/request             - generates a MOCK ClaimResponse
-  - POST /preauth/{claim_id}/fhir-request-result - accepts a REAL ClaimResponse Bundle from Dhamani
+PreAuth hosts BOTH sides of the PreAuth exchange:
+  - POST /preauth/{claim_id}/fhir-response        - accepts a REAL Claim request Bundle from Dhamani
+  - POST /preauth/{claim_id}/response              - generates a MOCK ClaimResponse
+  - POST /preauth/{claim_id}/fhir-response-result  - accepts a REAL ClaimResponse Bundle from Dhamani
 No PreAuth response is ever generated automatically - nothing calls the mock
 generator or expects a real response until one of the last two is explicitly
 called. (An earlier version of this service ran a background Kafka consumer
@@ -103,14 +106,13 @@ async def health_check():
     }
 
 
-@app.post("/fhir/request", tags=["FHIR"])
+@app.post("/fhir/response", tags=["FHIR"])
 async def receive_fhir_response(response: HospitalResponse):
     """
     Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani system
 
-    Path is named "/fhir/request" per this service's naming convention
-    (communication-service endpoints are labeled "request") - the Bundle it
-    receives is still eligibility RESPONSE data, unchanged from before.
+    Path is named "/fhir/response" - the Bundle it receives is eligibility
+    RESPONSE data, matching the path name.
 
     Flow: Dhamani → Communication Service → Kafka (fhir.incoming) → FHIR-JSON Service
     """
@@ -164,7 +166,7 @@ async def receive_fhir_response(response: HospitalResponse):
         )
 
 
-@app.post("/request", tags=["Eligibility"])
+@app.post("/response", tags=["Eligibility"])
 async def create_response(
     response_data: EligibilityResponseIn,
     db: Session = Depends(get_db)
@@ -173,10 +175,8 @@ async def create_response(
     Accept our flattened CoverageEligibilityResponse decision JSON, convert it
     to a FHIR Bundle, and publish it for delivery to Dhamani.
 
-    Path is named "/request" per this service's naming convention
-    (communication-service endpoints are labeled "request") - this endpoint
-    still builds and publishes an outbound eligibility RESPONSE, unchanged
-    from before.
+    Path is named "/response" - this endpoint builds and publishes an
+    outbound eligibility RESPONSE, matching the path name.
 
     Flow: JSON Input → FHIR Bundle → Kafka (fhir.response.outgoing)
     """
@@ -232,7 +232,7 @@ async def create_response(
         )
 
 
-@app.post("/preauth/{claim_id}/request", tags=["PreAuth"])
+@app.post("/preauth/{claim_id}/response", tags=["PreAuth"])
 async def respond_to_preauth_claim(
     claim_id: str,
     correlation_id: Optional[str] = None,
@@ -243,9 +243,8 @@ async def respond_to_preauth_claim(
     that already has a FHIR request logged. This is the ONLY thing that
     produces a PreAuth response - nothing does this automatically anymore.
 
-    Path is named "/preauth/{claim_id}/request" per this service's naming
-    convention (communication-service endpoints are labeled "request") - it
-    still generates and publishes a mock RESPONSE, unchanged from before.
+    Path is named "/preauth/{claim_id}/response" - it generates and
+    publishes a mock RESPONSE, matching the path name.
 
     Reads the FHIR request straight from preauth_request_log (written
     independently by preauth-log-service, which keeps logging every request
@@ -316,7 +315,7 @@ async def respond_to_preauth_claim(
         )
 
 
-@app.post("/preauth/{claim_id}/fhir-request-result", tags=["PreAuth"])
+@app.post("/preauth/{claim_id}/fhir-response-result", tags=["PreAuth"])
 async def receive_preauth_fhir_response(
     claim_id: str,
     fhir_bundle: Dict[str, Any],
@@ -325,9 +324,9 @@ async def receive_preauth_fhir_response(
 ):
     """
     Receive a REAL PreAuth ClaimResponse FHIR Bundle from Dhamani (as opposed
-    to /preauth/{claim_id}/request, which generates a MOCK one internally).
-    Named "fhir-request-result" (carries the adjudication result/decision) to
-    stay distinct from /preauth/{claim_id}/fhir-request, which accepts the
+    to /preauth/{claim_id}/response, which generates a MOCK one internally).
+    Named "fhir-response-result" (carries the adjudication result/decision) to
+    stay distinct from /preauth/{claim_id}/fhir-response, which accepts the
     Claim itself.
 
     If correlation_id isn't given as a query param, it's resolved from the
@@ -407,7 +406,7 @@ async def receive_preauth_fhir_response(
         )
 
 
-@app.post("/preauth/{claim_id}/fhir-request", tags=["PreAuth"])
+@app.post("/preauth/{claim_id}/fhir-response", tags=["PreAuth"])
 async def receive_preauth_fhir_claim_request(
     claim_id: str,
     fhir_bundle: Dict[str, Any]
@@ -417,10 +416,11 @@ async def receive_preauth_fhir_claim_request(
     priorauth-request, as opposed to POST /preauth/{claim_id} on
     integration-api, which builds its own outgoing Claim from our DB.
 
-    Lives here (not integration-api) and is named "fhir-request" because it
-    accepts a real Claim REQUEST - the path name and the resource direction
-    agree for this one. Named distinctly from
-    /preauth/{claim_id}/fhir-request-result, which accepts the ClaimResponse
+    Named "fhir-response" for consistency with this service's other paths
+    (all labeled "response", since this service is the side Dhamani calls
+    into) - NOT because of the payload direction: what it actually receives
+    here is a Claim REQUEST, not a response. Named distinctly from
+    /preauth/{claim_id}/fhir-response-result, which accepts the ClaimResponse
     decision instead.
 
     Converts it to flattened JSON (fhir_to_json_claim) and publishes both
@@ -428,8 +428,8 @@ async def receive_preauth_fhir_claim_request(
     already uses (preauth.json, preauth.fhir.outgoing), so preauth-log-service
     logs it identically as JSON_REQUEST/FHIR_REQUEST in preauth_request_log -
     no new topic or routing needed. A fresh correlation_id is generated here,
-    so it can be paired with a later POST /preauth/{claim_id}/request (or
-    /fhir-request-result) response.
+    so it can be paired with a later POST /preauth/{claim_id}/response (or
+    /fhir-response-result) response.
 
     Flow: Dhamani -> Communication Service -> Kafka (preauth.json, preauth.fhir.outgoing)
     """

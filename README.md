@@ -6,13 +6,13 @@ A complete microservices-based system for converting JSON patient data to FHIR f
 ## Services
 
 ### 1. Integration API (Port 8000)
-- **Purpose**: functionally still request-direction traffic only - outbound JSON→FHIR requests we send, and inbound FHIR requests Dhamani sends us. Endpoint *paths* here are labeled "response" as a naming convention (Communication Service's are labeled "request") - this is naming only, the actual request/response logic each endpoint performs hasn't changed.
+- **Purpose**: functionally still request-direction traffic only - outbound JSON→FHIR requests we send, and inbound FHIR requests Dhamani sends us. Endpoint *paths* here are labeled "response" as a naming convention (Communication Service's are also labeled "response", but for the opposite reason - it's the side Dhamani calls into) - this is naming only, the actual request/response logic each endpoint performs hasn't changed. One exception: `POST /json/request` is named for the JSON request it produces downstream, not for this convention and not for its request body shape (see below).
 - **Technology**: FastAPI + uvicorn
 - **Database**: MySQL
 - **Kafka Topics**: Publishes to `json.request`, `json.request.incoming`, `preauth.json`, `preauth.fhir.outgoing`
 - **Endpoints**:
   - `POST /patient` - Submit a flattened CoverageEligibilityRequest JSON (outbound: JSON→FHIR)
-  - `POST /fhir/response` - Receive a CoverageEligibilityRequest FHIR Bundle from Dhamani (inbound: FHIR→JSON) - named "/fhir/response" per naming convention; still handles request data
+  - `POST /json/request` - Dummy Dhamani-facing endpoint: receive a CoverageEligibilityRequest FHIR Bundle from Dhamani (inbound: FHIR→JSON) - named for the JSON request produced downstream, not for the request body shape (the body is still a FHIR Bundle)
   - `POST /preauth/{claim_id}` - Fetch a PreAuth claim from the DB stored procedure and convert it to a FHIR Claim Bundle
   - `GET /preauth/{claim_id}/audit-trail` - Full request/response log trail for a claim
   - `GET /preauth/export/excel` - Download the PreAuth request/response log as an Excel workbook
@@ -56,15 +56,16 @@ A complete microservices-based system for converting JSON patient data to FHIR f
   - Audit logging
 
 ### 5. Communication Service (Port 8001)
-- **Purpose**: functionally still response-direction traffic only - inbound FHIR responses Dhamani/hospital sends us, and outbound JSON→FHIR responses we send to Dhamani. Endpoint *paths* here are labeled "request" as a naming convention (Integration API's are labeled "response") - this is naming only, the actual request/response logic each endpoint performs hasn't changed.
+- **Purpose**: the side Dhamani/hospital calls into - inbound FHIR responses/requests they send us, and outbound JSON→FHIR responses we send to them. Endpoint *paths* here are labeled "response" as a naming convention (Integration API's are also labeled "response", but for the opposite reason - it's the side sending outbound request-direction traffic). Some paths are decoupled from the literal payload direction on purpose - see each endpoint's own docstring in the code for what it actually carries.
 - **Technology**: FastAPI + uvicorn
 - **Database**: MySQL
 - **Kafka Topics**: Publishes to `fhir.incoming`, `fhir.response.outgoing`, `preauth.fhir.incoming`
 - **Endpoints**:
-  - `POST /fhir/request` - Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani (inbound: FHIR→JSON) - named "/fhir/request" per naming convention; still handles response data
-  - `POST /request` - Submit our flattened CoverageEligibilityResponse decision JSON (outbound: JSON→FHIR) - named "/request" per naming convention; still builds/publishes a response
-  - `POST /preauth/{claim_id}/request` - Manually generate and publish the mock PreAuth ClaimResponse for a claim that already has a FHIR request logged (optional `?correlation_id=` to target a specific invocation, defaults to the most recent). Nothing generates a PreAuth response automatically - this is the only trigger. Named "/request" per naming convention; still generates a mock response.
-  - `POST /preauth/{claim_id}/fhir-request` - Receive a REAL PreAuth ClaimResponse FHIR Bundle from Dhamani (as opposed to the mock endpoint above), publish it for JSON conversion and DB/Excel logging. Named "/fhir-request" per naming convention; still handles a real response bundle.
+  - `POST /fhir/response` - Receive a CoverageEligibilityResponse FHIR Bundle from hospital/Dhamani (inbound: FHIR→JSON)
+  - `POST /response` - Submit our flattened CoverageEligibilityResponse decision JSON (outbound: JSON→FHIR)
+  - `POST /preauth/{claim_id}/response` - Manually generate and publish the mock PreAuth ClaimResponse for a claim that already has a FHIR request logged (optional `?correlation_id=` to target a specific invocation, defaults to the most recent). Nothing generates a PreAuth response automatically - this is the only trigger.
+  - `POST /preauth/{claim_id}/fhir-response` - Receive a REAL PreAuth Claim FHIR Bundle from Dhamani (a genuine incoming Claim *request*, despite the "response" path name - kept for naming consistency with this service's other paths), publish it for JSON conversion and DB/Excel logging.
+  - `POST /preauth/{claim_id}/fhir-response-result` - Receive a REAL PreAuth ClaimResponse FHIR Bundle from Dhamani (the adjudication decision, as opposed to the mock endpoint above), publish it for JSON conversion and DB/Excel logging.
   - `GET /health` - Health check
 
 ### 6. Workflow Service (Port 8002)
@@ -225,7 +226,7 @@ curl http://localhost:8000/transaction/TXN-A1B2C3D4E5F6
 ### 3. Submit FHIR Response (Hospital/Dhamani)
 
 ```bash
-curl -X POST http://localhost:8001/fhir/request \
+curl -X POST http://localhost:8001/fhir/response \
   -H "Content-Type: application/json" \
   -d '{
     "original_id": "TXN-A1B2C3D4E5F6",

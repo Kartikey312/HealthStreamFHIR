@@ -1,9 +1,18 @@
 """
 Integration API - FastAPI service
-Naming convention only, not the data direction: endpoint paths here are
-labeled "response" (POST /fhir/response, POST /preauth) while
-communication-service's are labeled "request" (POST /fhir/request, etc.) -
-the underlying request/response logic each endpoint performs is unchanged.
+Naming convention only, not the data direction: most endpoint paths here are
+labeled "response" (e.g. POST /preauth) as the side that sends outbound
+request-direction traffic to Dhamani/hospital. Communication Service's paths
+are also labeled "response" (POST /fhir/response, POST
+/preauth/{claim_id}/fhir-response, etc.), but for a different reason - it's
+the side Dhamani calls into. The underlying request/response logic each
+endpoint performs is unchanged either way.
+
+One exception: POST /json/request is a dummy Dhamani-facing endpoint (this
+service simulating the call Dhamani would make) and is named for the JSON
+request this service produces/publishes downstream, not for its own
+"response" convention and not for the request body shape - the body it
+actually validates is still a FHIR Bundle, converted to JSON internally.
 """
 import logging
 import json
@@ -168,17 +177,18 @@ async def create_patient(
         )
 
 
-@app.post("/fhir/response", tags=["FHIR"])
+@app.post("/json/request", tags=["JSON"])
 async def receive_fhir_request(fhir_bundle: Dict[str, Any]):
     """
     Dummy Dhamani-facing endpoint: receives a CoverageEligibilityRequest FHIR
     Bundle (as Dhamani would send it, on behalf of a provider), converts it to
     flattened JSON, and publishes it for internal processing.
 
-    Path is named "/fhir/response" per this service's naming convention
-    (integration-api endpoints are labeled "response") - the Bundle it
-    receives and the JSON it produces are still eligibility REQUEST data,
-    unchanged from before.
+    Path is named "/json/request" for the JSON request this whole service is
+    built around producing/publishing downstream, NOT for the request body
+    shape - the body this endpoint actually validates is still a FHIR Bundle
+    (resourceType must be "Bundle"), converted to JSON internally before
+    anything is published.
 
     Flow: Dhamani → Integration API → Kafka (json.request.incoming)
     """

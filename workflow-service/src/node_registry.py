@@ -57,10 +57,10 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "type": "json_to_fhir",
         "label": "JSON → FHIR",
         "category": "action",
-        "description": "Convert flat JSON into a FHIR Bundle",
+        "description": "Convert flat JSON into a FHIR Bundle - always the request direction: something we're sending out to Dhamani, never a response we're constructing",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "json_to_fhir_patient", "json_to_fhir_response", "json_to_fhir_claim"
+                "json_to_fhir_patient", "json_to_fhir_claim"
             ]},
             {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",
              "placeholder": "e.g. c_demo_1 or $input.claim_id",
@@ -71,10 +71,10 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "type": "fhir_to_json",
         "label": "FHIR → JSON",
         "category": "action",
-        "description": "Convert a FHIR Bundle into flat JSON (or validate it)",
+        "description": "Convert a FHIR Bundle into flat JSON (or validate it) - always the response direction: a request/claim/preauth response coming back from Dhamani, never an inbound request",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "fhir_to_json_response", "fhir_to_json_request", "validate_fhir_patient",
+                "fhir_to_json_response", "validate_fhir_patient",
                 "fhir_to_json_claim_response"
             ]},
             {"key": "originalPatientIdField", "label": "Original patient id field", "type": "string",
