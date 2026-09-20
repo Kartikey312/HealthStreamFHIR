@@ -17,6 +17,8 @@ class Envelope(BaseModel):
     event_type: Literal[
         "patient.request", "patient.fhir.outgoing",
         "patient.fhir.incoming", "patient.response",
+        "eligibility.request", "eligibility.fhir.outgoing",
+        "eligibility.fhir.incoming", "eligibility.response",
     ]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     attempt: int = 0

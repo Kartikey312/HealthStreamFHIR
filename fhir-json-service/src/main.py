@@ -2,7 +2,9 @@
 FHIR to JSON Transformer ("fhir-to-json" per implementation.md section 6.5)
 Reads an Envelope from fhir.incoming, maps the FHIR communication result
 (or an error) to the internal JSON response format, publishes an Envelope
-to json.response.
+to json.response. eligibility.fhir.incoming envelopes (a Dhamani
+CoverageEligibilityResponse Bundle) are mapped to the eligibility response
+JSON instead and published to eligibility.json.response.
 """
 import asyncio
 import logging
@@ -14,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
     create_kafka_consumer, create_kafka_producer, send_kafka_message,
-    consume_kafka_messages, TOPICS, Envelope, to_internal_response,
+    consume_kafka_messages, TOPICS, Envelope, to_internal_response, to_eligibility_response_json,
     SessionLocal, MessageTracking, AuditLog
 )
 
@@ -25,6 +27,49 @@ consumer = None
 producer = None
 
 
+async def process_eligibility_response(env: Envelope):
+    """Map one eligibility.fhir.incoming Envelope (FHIR Bundle) to the response JSON and publish to eligibility.json.response"""
+    db = SessionLocal()
+    tracking = None
+    try:
+        tracking = db.query(MessageTracking).filter(
+            MessageTracking.correlation_id == env.correlation_id
+        ).first()
+
+        json_response = to_eligibility_response_json(env.payload)  # raises on bad input -> tracking FAILED below
+
+        db.add(AuditLog(
+            correlation_id=env.correlation_id, service="fhir-to-json",
+            action="eligibility.response.built", payload=json_response
+        ))
+        if tracking:
+            tracking.status = "COMPLETED"
+        db.commit()
+
+        logger.info(f"✅ Mapped eligibility response to JSON: {json_response.get('requestIdentifier')}")
+        logger.info(f"📦 Response JSON:\n{json.dumps(json_response, indent=2, default=str)}")
+
+        out = Envelope(
+            correlation_id=env.correlation_id, source="fhir-to-json",
+            event_type="eligibility.response", payload=json_response,
+        )
+        await send_kafka_message(
+            producer, TOPICS["eligibility_json_response"], env.correlation_id,
+            out.model_dump(mode="json")
+        )
+
+        logger.info(f"📤 Published to eligibility.json.response: {env.correlation_id}")
+
+    except Exception as e:
+        if tracking:
+            tracking.status = "FAILED"
+            tracking.last_error = str(e)
+            db.commit()
+        raise
+    finally:
+        db.close()
+
+
 async def process_fhir_incoming(message):
     """Transform one fhir.incoming Envelope into the internal JSON response and publish to json.response"""
     try:
@@ -32,6 +77,10 @@ async def process_fhir_incoming(message):
 
         logger.info(f"📥 [fhir-to-json] Received: {env.correlation_id}")
         logger.info(f"📦 Payload:\n{json.dumps(env.payload, indent=2, default=str)}")
+
+        if env.event_type == "eligibility.fhir.incoming":
+            await process_eligibility_response(env)
+            return
 
         json_response = to_internal_response(env.payload, env.error)
 

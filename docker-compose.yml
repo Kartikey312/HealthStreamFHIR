@@ -181,6 +181,8 @@ services:
       context: .
       dockerfile: ./communication-service/Dockerfile
     container_name: communication-service
+    ports:
+      - "8001:8001"
     environment:
       DATABASE_URL: mysql+pymysql://fhir_user:fhir_password@mysql:3306/fhir_db
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
