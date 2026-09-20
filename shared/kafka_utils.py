@@ -107,4 +107,6 @@ TOPICS = {
     "preauth_fhir_outgoing": "preauth.fhir.outgoing",      # PreAuth JSON transformed to FHIR, for delivery to Dhamani
     "preauth_fhir_incoming": "preauth.fhir.incoming",      # PreAuth FHIR ClaimResponse (mock) coming back
     "preauth_json_response": "preauth.json.response",      # PreAuth FHIR ClaimResponse transformed back to JSON
+    "eligibility_fhir_outgoing": "eligibility.fhir.outgoing",  # Eligibility JSON transformed to a Dhamani FHIR Bundle (no consumer yet)
+    "eligibility_json_response": "eligibility.json.response",  # Dhamani eligibility FHIR response mapped to JSON (kept off json.response: processing-service reads that as a patient result)
 }

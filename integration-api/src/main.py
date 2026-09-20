@@ -2,10 +2,10 @@
 Integration API - FastAPI service
 Rebuilt per implementation.md section 6.2. Responsibilities: validate, log,
 audit, publish. Returns 202 Accepted with a correlation_id; does not wait
-for the FHIR round-trip. Only two routes exist now - the plan's endpoint
-surface for this service, nothing more (no PreAuth, no eligibility-specific
-schema, no Dhamani-facing dummy endpoint - those belonged to the pre-rebuild
-version of this service).
+for the FHIR round-trip. Routes: the plan's patient submit/status pair, plus
+POST/GET /api/v1/eligibility/requests (eligibility JSON -> Kafka -> Dhamani FHIR Bundle).
+No PreAuth or Dhamani-facing dummy endpoint - those belonged to the
+pre-rebuild version of this service.
 """
 import logging
 import json
@@ -25,7 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
     get_db, create_kafka_producer, send_kafka_message, TOPICS,
-    Base, engine, Envelope, AuditLog, MessageTracking
+    Base, engine, Envelope, AuditLog, MessageTracking,
+    PatientRequest as EligibilityRequestIn
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -123,6 +124,83 @@ async def submit_patient(body: PatientIn, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"❌ Error submitting patient: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to submit patient: {str(e)}")
+
+
+@app.post("/api/v1/eligibility/requests", status_code=202, tags=["eligibility"])
+async def submit_eligibility_request(body: EligibilityRequestIn, db: Session = Depends(get_db)):
+    """
+    Flow: JSON -> Kafka (json.request) -> json-fhir-service -> eligibility.fhir.outgoing
+    Returns 202 immediately with a correlation_id. The JSON -> FHIR Bundle
+    mapping happens in json-fhir-service; read the result with
+    GET /api/v1/eligibility/requests/{correlation_id}.
+    """
+    try:
+        correlation_id = str(uuid4())
+        payload = body.model_dump(mode="json")
+
+        envelope = Envelope(
+            correlation_id=correlation_id,
+            source="integration-api",
+            event_type="eligibility.request",
+            payload=payload,
+        )
+
+        db.add(AuditLog(
+            correlation_id=correlation_id, service="integration-api",
+            action="eligibility.request.received", payload=payload
+        ))
+        db.add(MessageTracking(
+            correlation_id=correlation_id, patient_id=body.patientIdentifier,
+            status="RECEIVED"
+        ))
+        db.commit()
+
+        logger.info(f"📝 Received eligibility request: {correlation_id}")
+        logger.info(f"📦 Payload:\n{json.dumps(payload, indent=2, default=str)}")
+
+        # Status is left alone after publishing - json-fhir-service may already
+        # have moved it to TRANSFORMED by the time send_and_wait returns.
+        await send_kafka_message(
+            producer, TOPICS["json_request"], body.patientIdentifier,
+            envelope.model_dump(mode="json")
+        )
+
+        logger.info(f"✅ Published eligibility request to json.request: {correlation_id}")
+
+        return {"correlation_id": correlation_id, "status": "RECEIVED"}
+
+    except Exception as e:
+        logger.error(f"❌ Error submitting eligibility request: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to submit eligibility request: {str(e)}")
+
+
+@app.get("/api/v1/eligibility/requests/{correlation_id}", tags=["eligibility"])
+async def get_eligibility_request(correlation_id: str, db: Session = Depends(get_db)):
+    """Tracking status, the FHIR Bundle json-fhir-service built, and the response JSON fhir-json-service mapped (each null until it exists)"""
+    tracking = db.query(MessageTracking).filter(
+        MessageTracking.correlation_id == correlation_id
+    ).first()
+
+    def latest(action: str):
+        row = db.query(AuditLog).filter(
+            AuditLog.correlation_id == correlation_id, AuditLog.action == action,
+        ).order_by(AuditLog.id.desc()).first()
+        return row.payload if row else None
+
+    fhir, response = latest("eligibility.fhir.built"), latest("eligibility.response.built")
+
+    # A response whose request.identifier matched no submitted request gets a
+    # fresh correlation_id with audit rows but no message_tracking row.
+    if not tracking and response is None:
+        raise HTTPException(status_code=404, detail="correlation_id not found")
+
+    return {
+        "correlation_id": correlation_id,
+        "status": tracking.status if tracking else "UNMATCHED_RESPONSE",
+        "last_error": tracking.last_error if tracking else None,
+        "fhir": fhir,
+        "response": response,
+    }
 
 
 @app.get("/api/v1/patients/status/{correlation_id}", tags=["patients"])

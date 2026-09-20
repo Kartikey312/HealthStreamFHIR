@@ -28,6 +28,7 @@ from .fhir_utils import (
 )
 from .envelope import Envelope
 from .patient_mapper import to_fhir_patient, to_internal_response
+from .eligibility_mapper import to_fhir_eligibility_bundle, to_eligibility_response_json
 
 __all__ = [
     "engine", "SessionLocal", "get_db",
@@ -42,5 +43,6 @@ __all__ = [
     "json_to_fhir_patient", "fhir_to_json_response", "validate_fhir_patient",
     "fhir_to_json_request", "json_to_fhir_response", "json_to_fhir_claim",
     "fhir_to_json_claim_response", "fhir_to_json_claim",
-    "Envelope", "to_fhir_patient", "to_internal_response"
+    "Envelope", "to_fhir_patient", "to_internal_response", "to_fhir_eligibility_bundle",
+    "to_eligibility_response_json"
 ]
