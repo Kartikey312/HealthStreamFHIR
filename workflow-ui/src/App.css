@@ -48,6 +48,12 @@
   cursor: default;
 }
 
+.topbar button.topbar-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
 .topbar-link {
   text-decoration: none;
   white-space: nowrap;

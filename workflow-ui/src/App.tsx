@@ -13,6 +13,8 @@ import {
   useSaveWorkflow,
   useRunWorkflow,
   useNodeTypes,
+  useDeleteWorkflow,
+  useRunHistory,
 } from "./api/client";
 import type { WorkflowNodeData, WorkflowDefinition } from "./types/workflow";
 
@@ -39,6 +41,8 @@ function App() {
   const createWorkflow = useCreateWorkflow();
   const saveWorkflow = useSaveWorkflow(workflowId ?? -1);
   const runWorkflow = useRunWorkflow();
+  const deleteWorkflow = useDeleteWorkflow();
+  const { data: runHistory } = useRunHistory(workflowId);
 
   // Hydrate the canvas when a workflow is loaded from the server
   useEffect(() => {
@@ -110,6 +114,24 @@ function App() {
 
   const handleSave = () => persistWorkflow();
 
+  const handleDelete = async () => {
+    if (!workflowId) return;
+    const runCount = runHistory?.runs.length ?? 0;
+    const ok = window.confirm(
+      `Delete "${name}"?` +
+        (runCount ? ` Its ${runCount} saved run${runCount === 1 ? "" : "s"} will be deleted too.` : "") +
+        " This cannot be undone."
+    );
+    if (!ok) return;
+    try {
+      await deleteWorkflow.mutateAsync(workflowId);
+      handleNew();
+      refetchWorkflows();
+    } catch (e) {
+      window.alert(`Could not delete the workflow: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const handleRun = async () => {
     // Run always executes the last SAVED definition (the backend has no way
     // to run unsaved in-browser state), so save first unconditionally -
@@ -147,6 +169,14 @@ function App() {
         </button>
         <button onClick={handleRun} disabled={nodes.length === 0 || runWorkflow.isPending}>
           ▶ Run
+        </button>
+        <button
+          className="topbar-danger"
+          onClick={handleDelete}
+          disabled={!workflowId || deleteWorkflow.isPending}
+          title={workflowId ? "Delete this workflow" : "Save or select a workflow to delete it"}
+        >
+          🗑 Delete
         </button>
         <a
           className="topbar-link"
