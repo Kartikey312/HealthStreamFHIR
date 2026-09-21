@@ -78,7 +78,8 @@ export function useSaveWorkflow(id: number) {
 export function useDeleteWorkflow() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: number) => apiFetch<void>(`/workflows/${id}`, { method: "DELETE" }),
+    // force: the caller has already confirmed, and a workflow that has ever run always has history
+    mutationFn: (id: number) => apiFetch<void>(`/workflows/${id}?force=true`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["workflows"] }),
   });
 }

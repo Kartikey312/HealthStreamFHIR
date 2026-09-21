@@ -152,11 +152,24 @@ async def update_workflow(workflow_id: int, body: WorkflowIn, db: Session = Depe
 
 
 @app.delete("/workflows/{workflow_id}", status_code=204, tags=["Workflows"])
-async def delete_workflow(workflow_id: int, db: Session = Depends(get_db)):
+async def delete_workflow(workflow_id: int, force: bool = False, db: Session = Depends(get_db)):
+    """
+    Deletes a workflow. One with run history is refused (409) unless force=true,
+    which deletes its runs and their step records along with it - never while
+    a run of it is still in progress.
+    """
     workflow = db.query(Workflow).filter(Workflow.id == workflow_id).first()
     if not workflow:
         raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
     try:
+        if force:
+            runs = db.query(WorkflowRun).filter(WorkflowRun.workflow_id == workflow_id)
+            if runs.filter(WorkflowRun.status == "RUNNING").first():
+                raise HTTPException(status_code=409, detail="A run of this workflow is still in progress")
+            run_ids = [r.id for r in runs.all()]
+            if run_ids:
+                db.query(WorkflowRunStep).filter(WorkflowRunStep.run_id.in_(run_ids)).delete(synchronize_session=False)
+                db.query(WorkflowRun).filter(WorkflowRun.id.in_(run_ids)).delete(synchronize_session=False)
         db.delete(workflow)
         db.commit()
     except IntegrityError:
