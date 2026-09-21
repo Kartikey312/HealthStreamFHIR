@@ -4,11 +4,13 @@ Kafka worker: consumes fhir.outgoing, calls the external FHIR server (HAPI
 FHIR locally), publishes both success AND failure results to fhir.incoming so
 downstream (fhir-json-service) stays uniform.
 
-Also serves one HTTP route, the side Dhamani/the insurer calls into:
-POST /api/v1/eligibility/responses accepts a CoverageEligibilityResponse
-FHIR Bundle and publishes it to fhir.incoming as an eligibility.fhir.incoming
-event. The worker runs as a background task of the FastAPI app, so both live
-in this one process.
+Also serves the HTTP routes Dhamani/the insurer call into:
+  POST /api/v1/eligibility/responses - a CoverageEligibilityResponse Bundle,
+      published to fhir.incoming as an eligibility.fhir.incoming event
+  POST /api/v1/preauth/responses     - a PreAuth Claim Bundle, published to
+      fhir.incoming as a preauth.claim.fhir.incoming event
+The worker runs as a background task of the FastAPI app, so both live in this
+one process.
 """
 import asyncio
 import logging
@@ -26,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 from shared import (
     create_kafka_consumer, create_kafka_producer, send_kafka_message,
     consume_kafka_messages, TOPICS, Envelope,
-    SessionLocal, MessageTracking, AuditLog
+    SessionLocal, MessageTracking, AuditLog, claim_key
 )
 
 from .fhir_client import FhirClient
@@ -203,6 +205,55 @@ async def receive_eligibility_response(bundle: dict = Body(...)):
     except Exception as e:
         logger.error(f"❌ Error receiving eligibility response: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to receive eligibility response: {str(e)}")
+
+
+@app.post("/api/v1/preauth/responses", status_code=202, tags=["preauth"])
+async def receive_preauth_response(bundle: dict = Body(...)):
+    """
+    Inbound PreAuth Claim FHIR Bundle (a priorauth-request) from Dhamani.
+    Publishes it to fhir.incoming (event_type preauth.claim.fhir.incoming);
+    fhir-json-service maps it to the PreAuth table rows, stores them, and
+    publishes the JSON to preauth.claim.json.response. Returns 202 immediately;
+    poll GET /api/v1/patients/status/{correlation_id} on integration-api.
+    """
+    if producer is None:
+        raise HTTPException(status_code=503, detail="Kafka producer not ready")
+
+    if bundle.get("resourceType") != "Bundle":
+        raise HTTPException(status_code=422, detail="Body must be a FHIR Bundle")
+    claim_id, patient_identifier = claim_key(bundle)
+    if not claim_id:
+        raise HTTPException(status_code=422, detail="Bundle has no Claim entry")
+
+    correlation_id = str(uuid4())
+
+    try:
+        db = SessionLocal()
+        try:
+            db.add(AuditLog(
+                correlation_id=correlation_id, service="fhir-comm",
+                action="preauth.claim.fhir.received", payload=bundle
+            ))
+            db.add(MessageTracking(
+                correlation_id=correlation_id, patient_id=patient_identifier or "unknown",
+                status="RECEIVED", fhir_resource_id=claim_id
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        envelope = Envelope(
+            correlation_id=correlation_id, source="fhir-comm",
+            event_type="preauth.claim.fhir.incoming", payload=bundle,
+        )
+        await send_kafka_message(producer, TOPICS["fhir_incoming"], claim_id, envelope.model_dump(mode="json"))
+
+        logger.info(f"✅ [fhir-comm] Published PreAuth claim {claim_id} to fhir.incoming: {correlation_id}")
+        return {"correlation_id": correlation_id, "status": "RECEIVED", "claim_id": claim_id}
+
+    except Exception as e:
+        logger.error(f"❌ Error receiving PreAuth claim: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to receive PreAuth claim: {str(e)}")
 
 
 if __name__ == "__main__":

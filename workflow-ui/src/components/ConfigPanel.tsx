@@ -144,6 +144,10 @@ export function ConfigPanel() {
     claimExcelExportLabel = "Download Response Chain Excel (by Claim ID)";
   }
 
+  // "To PreAuth tables" mapper: the stored rows it produces are what the
+  // integration-api export copies out of the database, one sheet per table.
+  const isPreauthTablesNode = nodeTypeDef.type === "fhir_to_json" && config.function === "to_preauth_tables";
+
   // Excel Export node: no ID, no DB lookup - just reads the PRECEDING
   // node's own input/output for the last Run from workflow_run_steps.
   const isExcelExportNode = nodeTypeDef.type === "excel_export";
@@ -168,6 +172,16 @@ export function ConfigPanel() {
             Enter a Claim ID below to download
           </div>
         )
+      )}
+      {isPreauthTablesNode && (
+        <a
+          className="download-button"
+          href="http://localhost:8000/api/v1/preauth/export/excel"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          ⬇ Download Stored PreAuth Tables (Excel)
+        </a>
       )}
       {isExcelExportNode && (
         !hasUpstreamNode ? (

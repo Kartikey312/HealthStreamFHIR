@@ -77,7 +77,7 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "description": "Convert a FHIR Bundle into flat JSON (or validate it) - always the response direction: a request/claim/preauth response coming back from Dhamani, never an inbound request",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "to_eligibility_response_json", "validate_fhir_patient",
+                "to_eligibility_response_json", "to_preauth_tables", "validate_fhir_patient",
                 "fhir_to_json_claim_response"
             ]},
             {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",

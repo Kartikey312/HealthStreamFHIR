@@ -4,7 +4,9 @@ Reads an Envelope from fhir.incoming, maps the FHIR communication result
 (or an error) to the internal JSON response format, publishes an Envelope
 to json.response. eligibility.fhir.incoming envelopes (a Dhamani
 CoverageEligibilityResponse Bundle) are mapped to the eligibility response
-JSON instead and published to eligibility.json.response.
+JSON instead and published to eligibility.json.response. preauth.claim.fhir.incoming
+envelopes (an incoming PreAuth Claim Bundle) are mapped to the rows of the
+PreAuth tables, stored in them, and published to preauth.claim.json.response.
 """
 import asyncio
 import logging
@@ -17,6 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 from shared import (
     create_kafka_consumer, create_kafka_producer, send_kafka_message,
     consume_kafka_messages, TOPICS, Envelope, to_internal_response, to_eligibility_response_json,
+    to_preauth_tables, ensure_preauth_schema, store_preauth_tables, engine,
     SessionLocal, MessageTracking, AuditLog
 )
 
@@ -70,6 +73,50 @@ async def process_eligibility_response(env: Envelope):
         db.close()
 
 
+async def process_preauth_claim(env: Envelope):
+    """Map one preauth.claim.fhir.incoming Envelope (Claim Bundle) to table rows, store them, publish to preauth.claim.json.response"""
+    db = SessionLocal()
+    tracking = None
+    try:
+        tracking = db.query(MessageTracking).filter(
+            MessageTracking.correlation_id == env.correlation_id
+        ).first()
+
+        tables = to_preauth_tables(env.payload)  # raises on bad input -> tracking FAILED below
+        written = store_preauth_tables(engine, tables)
+
+        db.add(AuditLog(
+            correlation_id=env.correlation_id, service="fhir-to-json",
+            action="preauth.claim.response.built", payload=tables
+        ))
+        if tracking:
+            tracking.status = "COMPLETED"
+        db.commit()
+
+        claim_id = tables["claim"][0]["id"]
+        logger.info(f"✅ Stored PreAuth claim {claim_id}: {written}")
+
+        out = Envelope(
+            correlation_id=env.correlation_id, source="fhir-to-json",
+            event_type="preauth.claim.response", payload=tables,
+        )
+        await send_kafka_message(
+            producer, TOPICS["preauth_claim_json_response"], claim_id, out.model_dump(mode="json")
+        )
+
+        logger.info(f"📤 Published to preauth.claim.json.response: {env.correlation_id}")
+
+    except Exception as e:
+        db.rollback()
+        if tracking:
+            tracking.status = "FAILED"
+            tracking.last_error = str(e)
+            db.commit()
+        raise
+    finally:
+        db.close()
+
+
 async def process_fhir_incoming(message):
     """Transform one fhir.incoming Envelope into the internal JSON response and publish to json.response"""
     try:
@@ -80,6 +127,10 @@ async def process_fhir_incoming(message):
 
         if env.event_type == "eligibility.fhir.incoming":
             await process_eligibility_response(env)
+            return
+
+        if env.event_type == "preauth.claim.fhir.incoming":
+            await process_preauth_claim(env)
             return
 
         json_response = to_internal_response(env.payload, env.error)
@@ -121,6 +172,13 @@ async def process_fhir_incoming(message):
 async def start_service():
     global consumer, producer
     try:
+        try:
+            ensure_preauth_schema(engine)
+            logger.info("✅ PreAuth tables ready")
+        except Exception as e:
+            # only PreAuth claims need them - don't take the other flows down with it
+            logger.error(f"❌ Could not prepare PreAuth tables: {e}", exc_info=True)
+
         producer = await create_kafka_producer()
         logger.info("✅ Producer connected")
 

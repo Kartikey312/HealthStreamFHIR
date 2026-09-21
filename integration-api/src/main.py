@@ -3,18 +3,19 @@ Integration API - FastAPI service
 Rebuilt per implementation.md section 6.2. Responsibilities: validate, log,
 audit, publish. Returns 202 Accepted with a correlation_id; does not wait
 for the FHIR round-trip. Routes: the plan's patient submit/status pair, plus
-POST/GET /api/v1/eligibility/requests (eligibility JSON -> Kafka -> Dhamani FHIR Bundle).
-No PreAuth or Dhamani-facing dummy endpoint - those belonged to the
-pre-rebuild version of this service.
+POST/GET /api/v1/eligibility/requests (eligibility JSON -> Kafka -> Dhamani FHIR Bundle),
+plus GET /api/v1/preauth/export/excel (Excel copy of the stored PreAuth claim tables).
+No PreAuth request endpoints or Dhamani-facing dummy endpoint - those belonged
+to the pre-rebuild version of this service.
 """
 import logging
 import json
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -28,6 +29,7 @@ from shared import (
     Base, engine, Envelope, AuditLog, MessageTracking,
     PatientRequest as EligibilityRequestIn
 )
+from shared.preauth_excel import build_preauth_workbook
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -201,6 +203,26 @@ async def get_eligibility_request(correlation_id: str, db: Session = Depends(get
         "fhir": fhir,
         "response": response,
     }
+
+
+@app.get("/api/v1/preauth/export/excel", tags=["preauth"])
+def export_preauth_excel():
+    """
+    Excel copy of every PreAuth claim table (one sheet per table, same columns,
+    all stored rows) - the claims fhir-json-service stored from
+    POST /api/v1/preauth/responses on communication-service.
+    """
+    try:
+        content = build_preauth_workbook(engine)
+    except Exception as e:
+        logger.error(f"❌ Error building PreAuth Excel export: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to build Excel export: {str(e)}")
+    filename = f"preauth_tables_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/v1/patients/status/{correlation_id}", tags=["patients"])
