@@ -3,6 +3,8 @@ JSON to FHIR Transformer ("json-to-fhir" per implementation.md section 6.3)
 Reads an Envelope from json.request, maps JSON -> FHIR Patient, publishes an
 Envelope to fhir.outgoing. eligibility.request envelopes are mapped to a
 Dhamani eligibility Bundle instead and published to eligibility.fhir.outgoing.
+preauth.claim.request envelopes (a PreAuth claim as table rows) are mapped to a
+Dhamani Claim Bundle and published to preauth.claim.fhir.outgoing.
 """
 import asyncio
 import logging
@@ -14,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared import (
     create_kafka_consumer, create_kafka_producer, send_kafka_message,
-    consume_kafka_messages, TOPICS, Envelope, to_fhir_patient, to_fhir_eligibility_bundle,
+    consume_kafka_messages, TOPICS, Envelope, to_fhir_patient, to_fhir_eligibility_bundle, to_fhir_preauth_bundle,
     SessionLocal, MessageTracking, AuditLog
 )
 
@@ -70,6 +72,49 @@ async def process_eligibility_request(env: Envelope):
         db.close()
 
 
+async def process_preauth_request(env: Envelope):
+    """Transform one preauth.claim.request Envelope (table rows) into a Dhamani Claim Bundle and publish to preauth.claim.fhir.outgoing"""
+    db = SessionLocal()
+    tracking = None
+    try:
+        tracking = db.query(MessageTracking).filter(
+            MessageTracking.correlation_id == env.correlation_id
+        ).first()
+
+        bundle = to_fhir_preauth_bundle(env.payload)  # raises on bad input -> tracking FAILED below
+        claim_id = env.payload["claim"][0]["id"]
+
+        db.add(AuditLog(
+            correlation_id=env.correlation_id, service="json-to-fhir",
+            action="preauth.claim.fhir.built", payload=bundle
+        ))
+        if tracking:
+            tracking.status = "TRANSFORMED"
+        db.commit()
+
+        logger.info(f"✅ Transformed PreAuth claim {claim_id} to a Claim Bundle: {bundle['id']}")
+
+        out = Envelope(
+            correlation_id=env.correlation_id, source="json-to-fhir",
+            event_type="preauth.claim.fhir.outgoing", payload=bundle,
+        )
+        await send_kafka_message(
+            producer, TOPICS["preauth_claim_fhir_outgoing"], claim_id, out.model_dump(mode="json")
+        )
+
+        logger.info(f"📤 Published to preauth.claim.fhir.outgoing: {env.correlation_id}")
+
+    except Exception as e:
+        db.rollback()
+        if tracking:
+            tracking.status = "FAILED"
+            tracking.last_error = str(e)
+            db.commit()
+        raise
+    finally:
+        db.close()
+
+
 async def process_json_request(message):
     """Transform one json.request Envelope into FHIR and publish to fhir.outgoing"""
     try:
@@ -80,6 +125,10 @@ async def process_json_request(message):
 
         if env.event_type == "eligibility.request":
             await process_eligibility_request(env)
+            return
+
+        if env.event_type == "preauth.claim.request":
+            await process_preauth_request(env)
             return
 
         db = SessionLocal()

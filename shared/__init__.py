@@ -29,8 +29,12 @@ from .fhir_utils import (
 from .envelope import Envelope
 from .patient_mapper import to_fhir_patient, to_internal_response
 from .eligibility_mapper import to_fhir_eligibility_bundle, to_eligibility_response_json
-from .preauth_mapper import to_preauth_tables, claim_key, find_claim
+from .preauth_mapper import to_preauth_tables, to_fhir_preauth_bundle, claim_key, find_claim
 from .preauth_tables import ensure_preauth_schema, store_preauth_tables
+from .eligibility_tables import (
+    ensure_eligibility_schema, store_eligibility_request, store_eligibility_response,
+    to_eligibility_request_rows, to_eligibility_response_rows,
+)
 
 __all__ = [
     "engine", "SessionLocal", "get_db",
@@ -46,6 +50,8 @@ __all__ = [
     "fhir_to_json_request", "json_to_fhir_response", "json_to_fhir_claim",
     "fhir_to_json_claim_response", "fhir_to_json_claim",
     "Envelope", "to_fhir_patient", "to_internal_response", "to_fhir_eligibility_bundle",
-    "to_eligibility_response_json", "to_preauth_tables", "claim_key", "find_claim",
-    "ensure_preauth_schema", "store_preauth_tables"
+    "to_eligibility_response_json", "to_preauth_tables", "to_fhir_preauth_bundle", "claim_key", "find_claim",
+    "ensure_preauth_schema", "store_preauth_tables",
+    "ensure_eligibility_schema", "store_eligibility_request", "store_eligibility_response",
+    "to_eligibility_request_rows", "to_eligibility_response_rows"
 ]

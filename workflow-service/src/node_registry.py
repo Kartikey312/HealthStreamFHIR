@@ -24,7 +24,7 @@ NODE_TYPES: List[Dict[str, Any]] = [
             {"key": "method", "label": "Method", "type": "select",
              "options": ["GET", "POST", "PUT", "PATCH", "DELETE"], "default": "GET"},
             {"key": "url", "label": "URL", "type": "string",
-             "placeholder": "http://host/path - or .../$input.body.correlation_id"},
+             "placeholder": "http://host/path - or .../$node.<node id>.body.correlation_id"},
             {"key": "delaySeconds", "label": "Wait before calling (seconds)", "type": "string",
              "placeholder": "0 - set ~3 for a GET that reads an async result", "default": "0"},
             {"key": "headers", "label": "Headers", "type": "keyvalue", "default": {}},
@@ -42,6 +42,23 @@ NODE_TYPES: List[Dict[str, Any]] = [
             {"key": "topic", "label": "Topic", "type": "select", "optionsFrom": "/topics"},
             {"key": "key", "label": "Message key", "type": "string",
              "placeholder": "static value or $input.transaction_id"}
+        ]
+    },
+    {
+        "type": "kafka_consume",
+        "label": "Kafka Consume",
+        "category": "action",
+        "description": "Wait for the Kafka event a service published because of an earlier step (e.g. the event a POST endpoint caused) and pass its content on. It reads, it does not publish. Matches the event type and correlation id, looking back up to 10 minutes.",
+        "config_schema": [
+            {"key": "topic", "label": "Topic", "type": "select", "optionsFrom": "/topics"},
+            {"key": "eventType", "label": "Event type", "type": "string",
+             "placeholder": "e.g. preauth.claim.response"},
+            {"key": "correlationId", "label": "Correlation id", "type": "string",
+             "placeholder": "$node.<post node id>.body.correlation_id"},
+            {"key": "output", "label": "Output", "type": "select",
+             "options": ["payload", "envelope"], "default": "payload"},
+            {"key": "timeoutSeconds", "label": "Wait up to (seconds)", "type": "string",
+             "placeholder": "30", "default": "30"}
         ]
     },
     {
@@ -63,7 +80,7 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "description": "Convert flat JSON into a FHIR Bundle - always the request direction: something we're sending out to Dhamani, never a response we're constructing",
         "config_schema": [
             {"key": "function", "label": "Function", "type": "select", "options": [
-                "to_fhir_eligibility_bundle", "json_to_fhir_claim"
+                "to_fhir_eligibility_bundle", "to_fhir_preauth_bundle", "json_to_fhir_claim"
             ]},
             {"key": "claimId", "label": "Claim ID (for Excel download)", "type": "string",
              "placeholder": "e.g. c_demo_1 or $input.claim_id",

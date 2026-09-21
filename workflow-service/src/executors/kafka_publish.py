@@ -14,7 +14,7 @@ async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: Execu
     if not topic:
         raise ValueError("kafka_publish node requires a topic")
 
-    key = resolve(config.get("key"), input_data)
+    key = resolve(config.get("key"), input_data, ctx.outputs)
     key = str(key) if key is not None else None
     await send_kafka_message(ctx.producer, topic, key, input_data)
 
