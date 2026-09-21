@@ -11,7 +11,7 @@ async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: Execu
     if not url:
         raise ValueError("http_request node requires a url")
 
-    url = resolve_url(url, input_data)
+    url = resolve_url(url, input_data, ctx.outputs)
 
     # The eligibility endpoints answer 202 and finish over Kafka, so a follow-up
     # GET needs a moment for the worker - capped so a typo can't hang a run.
@@ -19,7 +19,7 @@ async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: Execu
     if delay > 0:
         await asyncio.sleep(min(delay, 30))
 
-    headers = resolve_dict(config.get("headers"), input_data)
+    headers = resolve_dict(config.get("headers"), input_data, ctx.outputs)
     body_mode = config.get("bodyMode", "passthrough")
     json_body = input_data if body_mode == "passthrough" else (config.get("body") or {})
 

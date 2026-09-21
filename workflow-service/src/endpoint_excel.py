@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # (path, profile): a POST to it stores rows in that profile's tables
 URL_PROFILES: List[Tuple[str, str]] = [
     ("/api/v1/preauth/responses", "preauth-claim"),
+    ("/api/v1/preauth/requests", "preauth-claim"),
     ("/api/v1/eligibility/responses", "eligibility-response"),
     ("/api/v1/eligibility/requests", "eligibility-request"),
     ("/api/v1/patients", "patient"),
@@ -16,6 +17,7 @@ URL_PROFILES: List[Tuple[str, str]] = [
 # the in-line converters mirror what the endpoint's worker does with the same payload
 FUNCTION_PROFILES: Dict[str, str] = {
     "to_preauth_tables": "preauth-claim",
+    "to_fhir_preauth_bundle": "preauth-claim",
     "to_fhir_eligibility_bundle": "eligibility-request",
     "to_eligibility_response_json": "eligibility-response",
 }

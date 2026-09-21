@@ -348,3 +348,374 @@ def to_preauth_tables(bundle: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]
     }] if encounter and encounter_ident else []
 
     return tables
+
+
+# ---------------------------------------------------------------------------
+# The other direction: table rows -> Dhamani Claim Bundle (the outgoing request)
+# ---------------------------------------------------------------------------
+
+_DHAMANI = "http://dhamani.om/fhir/om/dhamani-fs/StructureDefinition"
+_TERMINOLOGY = "http://dhamani.om/terminology/CodeSystem"
+_CURRENCY = "OMR"
+
+
+def _iso(value: Optional[str]) -> Optional[str]:
+    """'2025-05-14 00:00:00' -> '2025-05-14'; other datetimes -> ISO 'T' form (the rows hold wall-clock time)"""
+    if not value:
+        return None
+    return value[:10] if value.endswith(" 00:00:00") else value.replace(" ", "T")
+
+
+def _coding(system: str, code: Optional[str], display: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    if code is None:
+        return None
+    coding = {"system": system, "code": code}
+    if display:
+        coding["display"] = display
+    return {"coding": [coding]}
+
+
+def _drop_none(d: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in d.items() if v is not None}
+
+
+def _uuid(kind: str, value: str) -> str:
+    import uuid
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{kind}:{value}"))
+
+
+def to_fhir_preauth_bundle(tables: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    """
+    Rows of the PreAuth tables ({table: [row, ...]}, the shape to_preauth_tables
+    produces and the request endpoint accepts) -> a Dhamani Claim message
+    Bundle. The inverse of to_preauth_tables: mapping a Bundle to rows and back
+    gives the same rows.
+    """
+    import uuid
+    from datetime import timezone, timedelta
+
+    claim_rows = tables.get("claim") or []
+    if not claim_rows:
+        raise ValueError("No claim row to build a Bundle from")
+    c = claim_rows[0]
+    claim_id = c["id"]
+    header_row = _first(tables.get("message_header"))
+    encounter_row = _first(tables.get("claim_request_encounter"))
+
+    provider_ident, insurer_ident = c.get("provider_identifier"), c.get("insurer_identifier")
+    if not provider_ident or not insurer_ident:
+        raise ValueError("claim needs provider_identifier and insurer_identifier")
+    base = f"http://{provider_ident}.Dhamani.om"
+
+    def url(kind: str, ident: str) -> str:
+        return f"{base}/{kind}/{ident}"
+
+    provider_org_id, insurer_org_id = _uuid("provider", provider_ident), _uuid("insurer", insurer_ident)
+    provider_url, insurer_url = url("Organization", provider_org_id), url("Organization", insurer_org_id)
+    patient_ident = c.get("patient_identifier")
+    patient_url = url("Patient", patient_ident) if patient_ident else None
+    claim_url = url("Claim", claim_id)
+    header_id = header_row.get("id") or c.get("message_header_id") or str(uuid.uuid4())
+
+    entries: List[Dict[str, Any]] = []
+
+    def add(resource: Dict[str, Any], full_url: str) -> None:
+        entries.append({"fullUrl": full_url, "resource": resource})
+
+    # MessageHeader
+    header = {
+        "resourceType": "MessageHeader", "id": header_id,
+        "meta": {"profile": [f"{_DHAMANI}/message-header|1.0.0"]},
+        "eventCoding": {"system": f"{_TERMINOLOGY}/om-message-events",
+                        "code": header_row.get("event_coding") or "priorauth-request"},
+        "destination": [{
+            "endpoint": f"http://{insurer_ident}.Dhamani.om/$process-message",
+            "receiver": {"type": "Organization", "identifier": {
+                "system": "http://dhamani.om/license/payer-license",
+                "value": header_row.get("destination_receiver_identifier") or insurer_ident}},
+        }],
+        "sender": {"type": "Organization", "identifier": {
+            "system": "http://dhamani.om/license/provider-license",
+            "value": header_row.get("sender_identifier") or provider_ident}},
+        "source": {"endpoint": base},
+        "focus": [{"reference": claim_url}],
+    }
+    if header_row.get("response_identifier") or header_row.get("response_code"):
+        header["response"] = _drop_none({"identifier": header_row.get("response_identifier"),
+                                         "code": header_row.get("response_code")})
+    add(header, f"urn:uuid:{header_id}")
+
+    # Organizations
+    def organization(org_id: str, profile: str, license_kind: str, type_code: str, ident: str,
+                     system: Optional[str], name: Optional[str]) -> Dict[str, Any]:
+        return _drop_none({
+            "resourceType": "Organization", "id": org_id,
+            "meta": {"profile": [f"{_DHAMANI}/{profile}|1.0.0"]},
+            "identifier": [{"system": system or f"http://dhamani.om/license/{license_kind}", "value": ident}],
+            "active": True,
+            "type": [_coding(f"{_TERMINOLOGY}/organization-type", type_code)],
+            "name": name,
+        })
+    add(organization(provider_org_id, "provider-organization", "provider-license", "prov", provider_ident,
+                     None, c.get("provider_name")), provider_url)
+    add(organization(insurer_org_id, "insurer-organization", "payer-license", "ins", insurer_ident,
+                     c.get("insurer_identifier_system"), c.get("insurer_name")), insurer_url)
+
+    # Patient (and a separate subscriber when the policy holder is someone else)
+    def patient_resource(ident: str, system: Optional[str], type_code: Optional[str], row: bool) -> Dict[str, Any]:
+        resource = {
+            "resourceType": "Patient", "id": ident,
+            "meta": {"profile": [f"{_DHAMANI}/patient|1.0.0"]},
+            "identifier": [_drop_none({
+                "type": _coding("http://terminology.hl7.org/CodeSystem/v2-0203", type_code,
+                                "National unique individual identifier" if type_code == "NI" else None),
+                "system": system, "value": ident})],
+            "active": True,
+        }
+        if row:
+            if c.get("patient_name"):
+                resource["name"] = [{"use": "official", "text": c["patient_name"], "given": [c["patient_name"]]}]
+            if c.get("patient_telecom"):
+                resource["telecom"] = [{"system": "phone", "value": c["patient_telecom"]}]
+            resource["gender"] = c.get("patient_gender")
+            resource["birthDate"] = _iso(c.get("patient_birth_date"))
+        return _drop_none(resource)
+    if patient_ident:
+        add(patient_resource(patient_ident, c.get("patient_identifier_system"), c.get("patient_identifier_type"), True),
+            patient_url)
+
+    # Coverage per insurance row, with its classes
+    classes_by_insurance: Dict[str, List[Dict[str, Any]]] = {}
+    for cls in tables.get("coverage_class") or []:
+        classes_by_insurance.setdefault(cls.get("insurance_id"), []).append(cls)
+
+    insurance = []
+    for n, row in enumerate(tables.get("claim_request_insurance") or [], start=1):
+        seq = row.get("sequence") or n
+        coverage_ident = row.get("coverage_identifier") or f"{claim_id}-COV-{seq}"
+        coverage_url = url("Coverage", coverage_ident)
+        subscriber_ident = row.get("coverage_subscriber_identifier") or patient_ident
+        subscriber_url = url("Patient", subscriber_ident) if subscriber_ident else patient_url
+        if subscriber_ident and subscriber_ident != patient_ident:
+            add(patient_resource(subscriber_ident, row.get("coverage_subscriber_system"), None, False), subscriber_url)
+        coverage = _drop_none({
+            "resourceType": "Coverage", "id": coverage_ident,
+            "meta": {"profile": [f"{_DHAMANI}/coverage|1.0.0"]},
+            "identifier": [{"value": row["coverage_identifier"]}] if row.get("coverage_identifier") else None,
+            "status": "active",
+            "subscriber": {"reference": subscriber_url} if subscriber_url else None,
+            "beneficiary": {"reference": patient_url} if patient_url else None,
+            "relationship": _coding("http://terminology.hl7.org/CodeSystem/subscriber-relationship", "self"),
+            "payor": [{"reference": insurer_url}],
+            "class": [_drop_none({
+                "type": _coding("http://terminology.hl7.org/CodeSystem/coverage-class", k.get("type")),
+                "value": k.get("value"), "name": k.get("name")})
+                for k in classes_by_insurance.get(row.get("id"), [])] or None,
+        })
+        add(coverage, coverage_url)
+        insurance.append(_drop_none({"sequence": seq, "focal": row.get("focal"), "coverage": {"reference": coverage_url}}))
+
+    # Encounter
+    encounter_url = None
+    if encounter_row.get("id"):
+        encounter_url = url("encounter", encounter_row["id"])
+        add(_drop_none({
+            "resourceType": "Encounter", "id": encounter_row["id"],
+            "meta": {"profile": [f"{_DHAMANI}/encounter|1.0.0"]},
+            "identifier": [{"system": f"{base}/identifier/Encounter", "value": encounter_row.get("identifier")}],
+            "status": encounter_row.get("status"),
+            "class": _drop_none({"system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                                 "code": encounter_row.get("class_code"), "display": encounter_row.get("class_display")})
+            if encounter_row.get("class_code") else None,
+            "subject": {"reference": patient_url} if patient_url else None,
+            "period": _drop_none({"start": _iso(encounter_row.get("period_start")),
+                                  "end": _iso(encounter_row.get("period_end"))}) or None,
+            "serviceProvider": {"reference": provider_url},
+        }), encounter_url)
+    elif c.get("encounter_identifier"):
+        encounter_url = url("encounter", c["encounter_identifier"])
+
+    # Practitioners + care team
+    care_team, practitioner_names = [], {}
+    for n, member in enumerate(tables.get("care_team") or [], start=1):
+        seq = member.get("sequence") or n
+        provider_ref = None
+        if member.get("provider_identifier"):
+            practitioner_id = _uuid("practitioner", member["provider_identifier"])
+            provider_ref = url("Practitioner", practitioner_id)
+            practitioner_names[member["provider_identifier"]] = member.get("provider_name")
+            if not any(e["fullUrl"] == provider_ref for e in entries):
+                add(_drop_none({
+                    "resourceType": "Practitioner", "id": practitioner_id,
+                    "meta": {"profile": [f"{_DHAMANI}/practitioner|1.0.0"]},
+                    "identifier": [{
+                        "type": _coding("http://terminology.hl7.org/CodeSystem/v2-0203", "MD", "Medical License"),
+                        "system": "http://dhamani.om/license/practitioner-license",
+                        "value": member["provider_identifier"]}],
+                    "active": True,
+                    "name": [{"use": "official", "text": member["provider_name"]}] if member.get("provider_name") else None,
+                }), provider_ref)
+        care_team.append(_drop_none({
+            "sequence": seq,
+            "provider": {"reference": provider_ref} if provider_ref else None,
+            "role": _coding(f"{_TERMINOLOGY}/practitioner-role", member.get("role")),
+            "qualification": _coding(f"{_TERMINOLOGY}/practice-codes", member.get("qualification")),
+        }))
+
+    # Supporting info
+    supporting_info = []
+    for n, si in enumerate(tables.get("supporting_info") or [], start=1):
+        entry = _drop_none({
+            "sequence": si.get("sequence") or n,
+            "category": _coding(f"{_TERMINOLOGY}/claim-information-category", si.get("category"),
+                                "Attachment" if si.get("category") == "attachment" else None),
+            "code": _drop_none({"coding": [_drop_none({"code": si.get("supporting_info_code") or si.get("code"),
+                                                        "display": si.get("supporting_info_display")})],
+                                "text": si.get("text")}) if (si.get("supporting_info_code") or si.get("code")) else (
+                    {"text": si["text"]} if si.get("text") else None),
+            "reason": _coding(f"{_TERMINOLOGY}/info-reason", si.get("reason"), si.get("display")),
+            "timingDate": _iso(si.get("timing_date")),
+            "timingPeriod": _drop_none({"start": _iso(si.get("timing_start")), "end": _iso(si.get("timing_end"))}) or None,
+            "valueBoolean": None if si.get("value_boolean") is None else bool(si["value_boolean"]),
+            "valueQuantity": {"value": si["value_quantity"]} if si.get("value_quantity") is not None else None,
+            "valueString": si.get("value_string"),
+        })
+        attachment = _drop_none({"contentType": si.get("value_attachment_content_type"),
+                                 "data": si.get("value_attachment_data"), "title": si.get("value_attachment_title"),
+                                 "url": si.get("value_attachment_url")})
+        if attachment:
+            entry["valueAttachment"] = attachment
+        supporting_info.append(entry)
+
+    # Diagnosis
+    diagnosis = []
+    for n, dx in enumerate(tables.get("diagnosis") or [], start=1):
+        entry = _drop_none({
+            "sequence": dx.get("sequence") or n,
+            "diagnosisCodeableConcept": _coding("http://hl7.org/fhir/sid/icd-10-cm", dx.get("diagnosis_codeable_concept")),
+            "type": [_coding(f"{_TERMINOLOGY}/diagnosis-type", dx.get("diagnosis_type"))] if dx.get("diagnosis_type") else None,
+            "onAdmission": _coding("http://terminology.hl7.org/CodeSystem/ex-diagnosis-on-admission",
+                                   dx.get("diagnosis_admission")),
+        })
+        if n == 1 and c.get("diagnosis_related_group"):
+            entry["packageCode"] = _coding(f"{_TERMINOLOGY}/drg", c["diagnosis_related_group"])
+        diagnosis.append(entry)
+
+    # Items and their details
+    details_by_item: Dict[str, List[Dict[str, Any]]] = {}
+    for d in tables.get("claim_request_detail") or []:
+        details_by_item.setdefault(d.get("item_id"), []).append(d)
+
+    def money(value: Any) -> Optional[Dict[str, Any]]:
+        return None if value is None else {"value": value, "currency": _CURRENCY}
+
+    def ext(name: str, **value: Any) -> Optional[Dict[str, Any]]:
+        return None if all(v is None for v in value.values()) else {"url": f"{_DHAMANI}/extension-{name}", **value}
+
+    items = []
+    for n, it in enumerate(tables.get("claim_request_item") or [], start=1):
+        seq = it.get("sequence") or n
+        payer_code = _drop_none({"system": it.get("payer_code_system"), "code": it.get("payer_code") or None,
+                                 "display": it.get("payer_code_display") or None})
+        extensions = [e for e in (
+            ext("package", valueBoolean=None if it.get("package_extenstion") is None else bool(it["package_extenstion"])),
+            ext("tax", valueMoney=money(it.get("tax"))),
+            ext("patient-share", valueMoney=money(it.get("patient_share"))),
+            ext("payer-share", valueMoney=money(it.get("payer_share"))),
+            ext("teleconsultation", valueBoolean=None if it.get("teleconsultation") is None else bool(it["teleconsultation"])),
+            ext("batch-number", valueString=it.get("batch_number")),
+            ext("payer-code", valueCodeableConcept={"coding": [payer_code]}) if payer_code.get("code") else None,
+        ) if e]
+        item = _drop_none({
+            "extension": extensions or None,
+            "sequence": seq,
+            "careTeamSequence": [it["care_team_sequence"]] if it.get("care_team_sequence") is not None else None,
+            "diagnosisSequence": [it["diagnosis_sequence"]] if it.get("diagnosis_sequence") is not None else None,
+            "informationSequence": [it["information_sequence"]] if it.get("information_sequence") is not None else None,
+            "productOrService": {"coding": [_drop_none({
+                "system": it.get("product_or_service_system"), "code": it.get("product_or_service_code"),
+                "display": it.get("product_or_service_description")})]},
+            "servicedDate": _iso(it.get("serviced_date")) if not (it.get("serviced_start") or it.get("serviced_end")) else None,
+            "servicedPeriod": _drop_none({"start": _iso(it.get("serviced_start")), "end": _iso(it.get("serviced_end"))}) or None,
+            "bodySite": _coding(f"{_TERMINOLOGY}/body-site", it.get("body_site")),
+            "subSite": [_coding(f"{_TERMINOLOGY}/sub-site", it["sub_site"])] if it.get("sub_site") else None,
+            "quantity": {"value": it["quantity"]} if it.get("quantity") is not None else None,
+            "unitPrice": money(it.get("unit_price")),
+            "factor": it.get("factor"),
+            "net": money(it.get("net")),
+        })
+        item_details = []
+        for m, d in enumerate(details_by_item.get(it.get("id"), []), start=1):
+            item_details.append(_drop_none({
+                "sequence": d.get("sequence") or m,
+                "productOrService": {"coding": [_drop_none({
+                    "system": d.get("product_or_service_system"), "code": d.get("product_or_service_code"),
+                    "display": d.get("product_or_service_description")})]},
+                "quantity": {"value": d["quantity"]} if d.get("quantity") is not None else None,
+                "unitPrice": money(d.get("unit_price")), "net": money(d.get("net")),
+                "extension": [e for e in (ext("tax", valueMoney=money(d.get("tax"))),) if e] or None,
+            }))
+        if item_details:
+            item["detail"] = item_details
+        items.append(item)
+
+    # Claim
+    claim_extensions = [e for e in (
+        {"url": f"{_DHAMANI}/extension-encounter", "valueReference": {"reference": encounter_url}} if encounter_url else None,
+        {"url": f"{_DHAMANI}/extension-eligibility-response",
+         "valueReference": {"identifier": {"value": c["eligibility_response_identifier"]}}}
+        if c.get("eligibility_response_identifier") else None,
+        {"url": f"{_DHAMANI}/extension-prescriber", "valueReference": _drop_none({
+            "type": "Practitioner",
+            "identifier": {"system": "http://dhamani.om/license/practitioner-license", "value": c["prescriber_identifier"]},
+            "display": practitioner_names.get(c["prescriber_identifier"])})} if c.get("prescriber_identifier") else None,
+        ext("eligibility-off-line", valueString=c.get("eligibility_off_line")),
+        ext("khatm", valueString=c.get("khatm")),
+        ext("new-born", valueBoolean=None if c.get("new_born") is None else bool(c["new_born"])),
+        ext("order-category", valueString=c.get("order_category")),
+        ext("order-reference", valueString=c.get("order_reference")),
+    ) if e]
+    accident = _drop_none({
+        "date": _iso(c.get("accident_date")), "type": _coding(f"{_TERMINOLOGY}/accident-type", c.get("accident_type")),
+        "locationAddress": {"text": c["accident_location_adress"]} if c.get("accident_location_adress") else None})
+    billable = _drop_none({"start": _iso(c.get("billable_start")), "end": _iso(c.get("billable_end"))})
+    claim = _drop_none({
+        "resourceType": "Claim", "id": claim_id,
+        "meta": {"profile": [f"{_DHAMANI}/professional-priorauth|1.0.0"]} if c.get("use") == "preauthorization" else None,
+        "extension": claim_extensions or None,
+        "identifier": [_drop_none({"system": c.get("identifier_system"), "value": c.get("identifier") or claim_id})],
+        "status": c.get("status") or "active",
+        "type": _coding("http://terminology.hl7.org/CodeSystem/claim-type", c.get("type")),
+        "subType": _coding(f"{_TERMINOLOGY}/claim-subtype", c.get("sub_type")),
+        "use": c.get("use"),
+        "patient": {"reference": patient_url} if patient_url else None,
+        "billablePeriod": billable or None,
+        "created": _iso(c.get("created")),
+        "insurer": {"reference": insurer_url}, "provider": {"reference": provider_url},
+        "priority": _coding("http://terminology.hl7.org/CodeSystem/processpriority", c.get("priority")),
+        "payee": _drop_none({"type": _coding("http://terminology.hl7.org/CodeSystem/payeetype", c.get("payee_type")),
+                             "party": {"reference": c["payee_party"]} if c.get("payee_party") else None}) or None,
+        "facility": {"display": c["facility"]} if c.get("facility") else None,
+        "prescription": {"identifier": {"value": c["prescription_identifier"]}} if c.get("prescription_identifier") else None,
+        "referral": {"reference": c["referral"]} if c.get("referral") else None,
+        "accident": accident or None,
+        "related": [_drop_none({
+            "claim": {"identifier": {"value": r["claim_identifier"]}} if r.get("claim_identifier") else None,
+            "relationship": _coding(f"{_TERMINOLOGY}/claim-relationship", r.get("relationship"))})
+            for r in tables.get("claim_related") or []] or None,
+        "careTeam": care_team or None,
+        "supportingInfo": supporting_info or None,
+        "diagnosis": diagnosis or None,
+        "insurance": insurance or None,
+        "item": items or None,
+        "total": money(c.get("total")),
+    })
+    add(claim, claim_url)
+
+    return {
+        "resourceType": "Bundle", "id": c.get("bundle_id") or str(uuid.uuid4()),
+        "meta": {"profile": [f"{_DHAMANI}/bundle|1.0.0"]},
+        "type": "message",
+        "timestamp": datetime.now(timezone(timedelta(hours=4))).isoformat(timespec="milliseconds"),
+        "entry": entries,
+    }

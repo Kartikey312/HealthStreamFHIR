@@ -128,6 +128,7 @@ async def run_workflow(run_id: int, definition: Dict[str, Any], trigger_input: D
         incoming, _outgoing = _build_adjacency(nodes, definition.get("edges", []) or [])
 
         outputs: Dict[str, Dict[str, Any]] = {}
+        run_ctx = ExecutionContext(ctx.producer, outputs)  # this run's own view; ctx is shared by every run
         failed_ancestor = set()
         any_failed = False
 
@@ -155,7 +156,7 @@ async def run_workflow(run_id: int, definition: Dict[str, Any], trigger_input: D
             step_id = _create_step(db, run_id, nid, node_type, input_data)
 
             try:
-                output = await NODE_EXECUTORS[node_type](node.get("config") or {}, input_data, ctx)
+                output = await NODE_EXECUTORS[node_type](node.get("config") or {}, input_data, run_ctx)
                 outputs[nid] = output
                 _finish_step(db, step_id, "SUCCESS", output_data=output)
             except Exception as e:

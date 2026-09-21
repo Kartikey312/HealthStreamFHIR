@@ -1,10 +1,11 @@
 from .context import ExecutionContext
-from . import manual_trigger, http_request, kafka_publish, db_query, fhir_transform, view, excel_export
+from . import manual_trigger, http_request, kafka_publish, kafka_consume, db_query, fhir_transform, view, excel_export
 
 NODE_EXECUTORS = {
     "manual_trigger": manual_trigger.execute,
     "http_request": http_request.execute,
     "kafka_publish": kafka_publish.execute,
+    "kafka_consume": kafka_consume.execute,
     "db_query": db_query.execute,
     "json_to_fhir": fhir_transform.execute,
     "fhir_to_json": fhir_transform.execute,

@@ -20,6 +20,7 @@ class Envelope(BaseModel):
         "eligibility.request", "eligibility.fhir.outgoing",
         "eligibility.fhir.incoming", "eligibility.response",
         "preauth.claim.fhir.incoming", "preauth.claim.response",
+        "preauth.claim.request", "preauth.claim.fhir.outgoing",
     ]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     attempt: int = 0

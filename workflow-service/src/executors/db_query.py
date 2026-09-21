@@ -27,7 +27,7 @@ async def execute(config: Dict[str, Any], input_data: Dict[str, Any], ctx: Execu
     # or pasting) would otherwise silently produce a bind name that doesn't
     # match anything, breaking the whole call with a confusing SQL error.
     trimmed_params = {str(k).strip(): v for k, v in raw_params.items() if str(k).strip()}
-    params = resolve_dict(trimmed_params, input_data)
+    params = resolve_dict(trimmed_params, input_data, ctx.outputs)
     call_sql = f"CALL {procedure}(" + ", ".join(f":{k}" for k in params.keys()) + ")"
 
     # This runs inside a background asyncio task, not a request, so there's no

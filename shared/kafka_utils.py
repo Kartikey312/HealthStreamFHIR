@@ -110,4 +110,5 @@ TOPICS = {
     "eligibility_fhir_outgoing": "eligibility.fhir.outgoing",  # Eligibility JSON transformed to a Dhamani FHIR Bundle (no consumer yet)
     "eligibility_json_response": "eligibility.json.response",  # Dhamani eligibility FHIR response mapped to JSON (kept off json.response: processing-service reads that as a patient result)
     "preauth_claim_json_response": "preauth.claim.json.response",  # incoming PreAuth Claim Bundle mapped to the stored-table rows (kept off preauth.json.response: preauth-log-service logs that by claim_id)
+    "preauth_claim_fhir_outgoing": "preauth.claim.fhir.outgoing",  # PreAuth claim JSON (table rows) transformed to a Dhamani Claim Bundle, for delivery to Dhamani (no consumer yet)
 }

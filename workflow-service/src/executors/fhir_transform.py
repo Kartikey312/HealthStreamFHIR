@@ -4,7 +4,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../'))
 from shared import (
-    to_fhir_eligibility_bundle, to_eligibility_response_json, to_preauth_tables, validate_fhir_patient,
+    to_fhir_eligibility_bundle, to_eligibility_response_json, to_preauth_tables, to_fhir_preauth_bundle, validate_fhir_patient,
     fhir_to_json_request, json_to_fhir_response, json_to_fhir_claim,
     fhir_to_json_claim_response
 )
@@ -16,6 +16,7 @@ FUNCTION_REGISTRY = {
     "to_fhir_eligibility_bundle": to_fhir_eligibility_bundle,
     "to_eligibility_response_json": to_eligibility_response_json,
     "to_preauth_tables": to_preauth_tables,
+    "to_fhir_preauth_bundle": to_fhir_preauth_bundle,
     "validate_fhir_patient": validate_fhir_patient,
     "fhir_to_json_request": fhir_to_json_request,
     "json_to_fhir_response": json_to_fhir_response,

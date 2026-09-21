@@ -19,6 +19,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 
+from .eligibility_tables import ensure_eligibility_schema
 from .preauth_tables import TABLE_ORDER, ensure_preauth_schema
 
 EXCEL_CELL_LIMIT = 32767  # Excel rejects longer cell text (base64 attachments, big JSON payloads)
@@ -43,8 +44,14 @@ _CLAIM_FILTERS = {
 _TRACKING_FILTERS = {"message_tracking": "correlation_id = :k", "audit_log": "correlation_id = :k"}
 _TRACKING_ORDER = {"message_tracking": "created_at DESC", "audit_log": "id DESC"}
 
-# endpoint -> the tables it stores into. The eligibility and patient endpoints
-# only write the tracking/audit tables; PreAuth claims write the 11 claim tables.
+_ELIGIBILITY_REQUEST_FILTERS = {"eligibility_request": "correlation_id = :k"}
+_ELIGIBILITY_RESPONSE_FILTERS = {
+    "eligibility_response": "correlation_id = :k",
+    "eligibility_response_error": "response_id IN (SELECT id FROM eligibility_response WHERE correlation_id = :k)",
+}
+
+# endpoint -> the tables it stores into. PreAuth claims write the 11 claim tables, eligibility
+# requests/responses their own tables, and the patient endpoint only the tracking/audit tables.
 PROFILES: Dict[str, Dict[str, Any]] = {
     "preauth-claim": {
         "label": "PreAuth claim",
@@ -54,24 +61,27 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "filters": _CLAIM_FILTERS,
         "latest_order": {},
         "all_rows_limit": None,
+        "ensure": ensure_preauth_schema,
     },
     "eligibility-request": {
         "label": "Eligibility request",
         "endpoint": "POST /api/v1/eligibility/requests (integration-api)",
         "key_name": "correlation_id",
-        "tables": ["message_tracking", "audit_log"],
-        "filters": _TRACKING_FILTERS,
-        "latest_order": _TRACKING_ORDER,
+        "tables": ["eligibility_request"],
+        "filters": _ELIGIBILITY_REQUEST_FILTERS,
+        "latest_order": {"eligibility_request": "inserted_on DESC"},
         "all_rows_limit": 200,
+        "ensure": ensure_eligibility_schema,
     },
     "eligibility-response": {
         "label": "Eligibility response",
         "endpoint": "POST /api/v1/eligibility/responses (communication-service)",
         "key_name": "correlation_id",
-        "tables": ["message_tracking", "audit_log"],
-        "filters": _TRACKING_FILTERS,
-        "latest_order": _TRACKING_ORDER,
+        "tables": ["eligibility_response", "eligibility_response_error"],
+        "filters": _ELIGIBILITY_RESPONSE_FILTERS,
+        "latest_order": {"eligibility_response": "inserted_on DESC"},
         "all_rows_limit": 200,
+        "ensure": ensure_eligibility_schema,
     },
     "patient": {
         "label": "Patient",
@@ -155,8 +165,8 @@ def build_endpoint_workbook(engine, profile_key: str, key: Optional[str] = None,
     "all-rows" shows every stored row (tracking tables: the latest 200).
     """
     profile = PROFILES[profile_key]
-    if profile_key == "preauth-claim":
-        ensure_preauth_schema(engine)  # creates any missing table before we read it
+    if profile.get("ensure"):
+        profile["ensure"](engine)  # creates any missing table before we read it
 
     scoped = scope != "all-rows"
 
@@ -173,6 +183,35 @@ def build_endpoint_workbook(engine, profile_key: str, key: Optional[str] = None,
                 where, order, limit = None, profile["latest_order"].get(name), profile["all_rows_limit"]
             _write_data_sheet(wb, conn, quote, name, where, key, order, limit)
     return wb
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
+def read_endpoint_rows(engine, profile_key: str, key: str) -> Dict[str, List[Dict[str, Any]]]:
+    """The rows one record (claim_id / correlation_id) has in each of the endpoint's tables, as JSON-safe dicts"""
+    profile = PROFILES[profile_key]
+    if profile.get("ensure"):
+        profile["ensure"](engine)
+    quote = engine.dialect.identifier_preparer.quote
+    rows: Dict[str, List[Dict[str, Any]]] = {}
+    with engine.connect() as conn:
+        for name in profile["tables"]:
+            order = "id" if name == "audit_log" else "1"
+            result = conn.execute(
+                text(f"SELECT * FROM {quote(name)} WHERE {profile['filters'][name]} ORDER BY {order}"), {"k": key})
+            columns = list(result.keys())
+            rows[name] = [{c: _json_value(v) for c, v in zip(columns, row)} for row in result]
+    return rows
 
 
 def workbook_bytes(wb: Workbook) -> bytes:

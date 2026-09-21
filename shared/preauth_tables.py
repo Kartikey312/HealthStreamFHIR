@@ -165,13 +165,13 @@ TABLE_ORDER: List[str] = [
 ]
 
 
-def ensure_preauth_schema(engine) -> None:
-    """Create any missing preauth table and add any missing column to existing ones. Additive only."""
-    metadata.create_all(engine, checkfirst=True)
+def ensure_schema(engine, meta: MetaData) -> None:
+    """Create any missing table of meta and add any missing column to existing ones. Additive only."""
+    meta.create_all(engine, checkfirst=True)
 
     inspector = inspect(engine)
     quote = engine.dialect.identifier_preparer.quote
-    for table in metadata.sorted_tables:
+    for table in meta.sorted_tables:
         existing = {c["name"] for c in inspector.get_columns(table.name)}
         for column in table.columns:
             if column.name in existing:
@@ -187,7 +187,12 @@ def ensure_preauth_schema(engine) -> None:
                     raise
 
 
-def _coerce(column: Column, value: Any) -> Any:
+def ensure_preauth_schema(engine) -> None:
+    """Create any missing preauth table and add any missing column to existing ones. Additive only."""
+    ensure_schema(engine, metadata)
+
+
+def coerce_value(column: Column, value: Any) -> Any:
     """JSON-safe value (ISO date string, float) -> the type its column wants"""
     if value is None:
         return None
@@ -234,7 +239,7 @@ def store_preauth_tables(engine, tables: Dict[str, List[Dict[str, Any]]]) -> Dic
                 unknown = set(row) - set(table.c.keys())
                 if unknown:
                     raise ValueError(f"{name}: unknown column(s) {sorted(unknown)}")
-                rows.append({c.name: _coerce(c, row.get(c.name)) for c in table.columns})
+                rows.append({c.name: coerce_value(c, row.get(c.name)) for c in table.columns})
             if rows:
                 conn.execute(insert(table), rows)
             written[name] = len(rows)
