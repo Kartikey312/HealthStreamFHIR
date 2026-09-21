@@ -150,11 +150,11 @@ function App() {
         </button>
         <a
           className="topbar-link"
-          href="http://localhost:8000/preauth/export/excel"
+          href="http://localhost:8000/api/v1/preauth/export/excel"
           target="_blank"
           rel="noopener noreferrer"
         >
-          ⬇ Download Excel History
+          ⬇ Download PreAuth Tables Excel
         </a>
       </header>
 
