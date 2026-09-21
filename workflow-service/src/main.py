@@ -24,12 +24,14 @@ from shared import (
     get_db, create_kafka_producer, TOPICS,
     Workflow, WorkflowRun, WorkflowRunStep, Base, engine
 )
+from shared.table_export import PROFILES, build_endpoint_workbook, workbook_bytes
 
 from .schemas import (
     WorkflowIn, WorkflowSummary, WorkflowOut, RunRequest, RunAccepted,
     WorkflowRunOut, WorkflowRunStepOut, WorkflowRunSummary
 )
 from .node_registry import NODE_TYPES
+from .endpoint_excel import detect_profile, find_key
 from .engine import run_workflow, validate_graph, GraphValidationError
 from .executors import ExecutionContext
 
@@ -303,6 +305,24 @@ async def export_run_node_excel(run_id: int, node_id: str, db: Session = Depends
         WorkflowRunStep.node_id.in_(source_ids)
     ).all()
     steps_by_node = {s.node_id: s for s in steps}
+
+    # The tables (and their stored rows) of the endpoint this branch feeds or
+    # mirrors - just those, one sheet each. With no recognisable endpoint it
+    # falls back to the run's own input/output pair below.
+    node_config = node_by_id[node_id].get("config") or {}
+    profile = node_config.get("source")
+    if profile not in PROFILES:
+        profile = detect_profile(node_id, node_by_id, incoming)
+
+    if profile:
+        all_steps = db.query(WorkflowRunStep).filter(WorkflowRunStep.run_id == run_id).all()
+        key = find_key(profile, node_by_id, all_steps)
+        wb = build_endpoint_workbook(engine, profile, key, node_config.get("scope") or "this-run")
+        return StreamingResponse(
+            BytesIO(workbook_bytes(wb)),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename=run_{run_id}_{node_id}_tables.xlsx"}
+        )
 
     wb = Workbook()
     wb.remove(wb.active)

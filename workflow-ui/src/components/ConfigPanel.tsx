@@ -148,8 +148,9 @@ export function ConfigPanel() {
   // integration-api export copies out of the database, one sheet per table.
   const isPreauthTablesNode = nodeTypeDef.type === "fhir_to_json" && config.function === "to_preauth_tables";
 
-  // Excel Export node: no ID, no DB lookup - just reads the PRECEDING
-  // node's own input/output for the last Run from workflow_run_steps.
+  // Excel Export node: builds a workbook of the tables the endpoint feeding it
+  // stores into, one sheet per table; with no recognised endpoint it falls back
+  // to the PRECEDING node's own input/output for the last Run (workflow_run_steps).
   const isExcelExportNode = nodeTypeDef.type === "excel_export";
   const hasUpstreamNode = edges.some((e) => e.target === selectedNode.id);
 
@@ -199,7 +200,7 @@ export function ConfigPanel() {
             target="_blank"
             rel="noopener noreferrer"
           >
-            ⬇ Download This Chain's Excel
+            ⬇ Download Excel (stored tables)
           </a>
         )
       )}

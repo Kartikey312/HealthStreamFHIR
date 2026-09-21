@@ -96,8 +96,13 @@ NODE_TYPES: List[Dict[str, Any]] = [
         "type": "excel_export",
         "label": "Excel Export",
         "category": "utility",
-        "description": "No-op pass-through, like View - but after a Run, its Download button exports whatever actually flowed through the node right before it in THIS run: that upstream node's own input and output (e.g. wired right after a JSON -> FHIR node, it downloads the JSON that came in and the FHIR that came out; after FHIR -> JSON, vice versa). No claim ID or DB lookup needed - it reads straight from this run's own recorded step data.",
-        "config_schema": []
+        "description": "No-op pass-through, like View - but after a Run its Download button builds an Excel workbook of the tables the endpoint feeding it stores into: one sheet per table, laid out as a real table with the rows stored for this run. Which tables depends on the endpoint - PreAuth claims write the 11 claim tables; eligibility and patient requests write message_tracking and audit_log. The endpoint is detected from the node feeding this one (or set below); with none recognised it falls back to that step's own input and output.",
+        "config_schema": [
+            {"key": "source", "label": "Endpoint tables", "type": "select",
+             "options": ["auto", "preauth-claim", "eligibility-request", "eligibility-response", "patient"], "default": "auto"},
+            {"key": "scope", "label": "Rows", "type": "select",
+             "options": ["this-run", "all-rows"], "default": "this-run"}
+        ]
     }
 ]
 
